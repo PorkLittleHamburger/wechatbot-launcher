@@ -22,7 +22,7 @@ WeChat OneBot Launcher 的全部开发文件集中在本目录。桌面应用采
 .venv/Scripts/python.exe -m pytest -q bot/tests launcher/tests -c bot/pyproject.toml
 ```
 
-只运行启动器测试可执行 `.venv/Scripts/python.exe -m pytest -q launcher`。浏览器管理入口可以使用 `launcher/launcher.cmd`、根目录 `launcher.cmd` 或 `bot/launcher.cmd`；三者使用同一个实现。
+只运行启动器测试可执行 `.venv/Scripts/python.exe -m pytest -q launcher`。浏览器管理入口可以使用 `launcher/launcher.cmd` 或 `bot/launcher.cmd`，两者使用同一个实现。公共区旧入口与缓存已清理；历史构建日志归入本目录的 `.development/legacy-public-area/data`，不纳入 Git。
 
 ## 构建桌面安装程序
 

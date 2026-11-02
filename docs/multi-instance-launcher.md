@@ -20,7 +20,7 @@
 
 ## 启动
 
-双击根目录 `launcher.cmd`，或执行：
+双击 `launcher/launcher.cmd`，或在仓库根目录执行：
 
 ```powershell
 .\.venv\Scripts\python.exe -m wechat_onebot launcher
