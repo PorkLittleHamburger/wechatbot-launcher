@@ -1,22 +1,10 @@
-# 多实例启动器设计与使用
+# 浏览器多实例管理入口
 
-本文记录浏览器兼容入口的设计。独立桌面应用的版本管理、托盘、升级和恢复能力见 [桌面启动器说明](desktop-launcher.md)。源码位于 `launcher/python/wechat_onebot/launcher`，浏览器面板位于 `launcher/webui/launcher.html`；以下命令从仓库根目录执行。
+浏览器管理入口用于源码开发和兼容部署。它使用当前源码与 Python 环境管理多个独立服务实例。需要版本管理、托盘、实例升级及恢复时，使用 [桌面应用](desktop-launcher.md)。以下命令从仓库根目录执行。
 
-## 参考代码与取舍
+## 功能范围
 
-本实现阅读并参考 [AstrBotDevs/astrbot-launcher](https://github.com/AstrBotDevs/astrbot-launcher/tree/185e810eba93e198b9e0c8fe01ebaecca783f215)，参考提交为 `185e810eba93e198b9e0c8fe01ebaecca783f215`。参考的是分层及生命周期设计，代码以本项目的 Python/FastAPI 技术栈重新实现。
-
-| AstrBot Launcher 参考位置 | 本项目实现 |
-| --- | --- |
-| `src-tauri/src/config.rs` 实例清单 | 每个实例的 `instance.json`，原子写入 |
-| `instance/crud.rs` 实例操作与校验 | `launcher/manager.py` 创建、编辑、归档、目录约束 |
-| `process/manager.rs` 生命周期互斥 | 每实例异步锁，创建/编辑/归档清单锁 |
-| `instance/lifecycle.rs` 启动等待、端口分配 | 子进程句柄、30 秒身份健康检查、端口检查 |
-| `process/control.rs` 优雅停止与进程保护 | 父子管道请求停止，15 秒后仅终止所持子进程 |
-| `backup.rs` 实例备份 | 停止实例后生成独立 ZIP，避免运行中复制 SQLite |
-| `src/pages/Dashboard.tsx` 实例面板 | 独立 `webui/launcher.html`，卡片、日志和操作入口 |
-
-首版复用已有 Python 及依赖，界面运行在本机浏览器。实例配置、消息库、媒体、管理密码、OneBot 配置及日志相互独立；所有实例共享当前安装目录的代码和 Python。它支持同版本的多个服务实例，尚不支持各实例独立选择软件版本、自动更新、在线备份恢复、托盘或启动器开机自启。升级整个安装目录前先停止全部实例并备份。
+实例配置、消息库、媒体、管理密码、OneBot 配置及日志相互独立；所有实例共享当前安装目录的代码和 Python。此兼容入口不提供按实例选择软件版本、托盘、启动器开机自启或 ZIP 自动导入恢复。升级共享代码前应停止全部实例并备份。
 
 ## 启动
 
@@ -37,7 +25,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\launcher\scripts\run_launcher.ps
 自定义启动器端口和数据目录：
 
 ```powershell
-.\.venv\Scripts\python.exe -m wechat_onebot launcher --port 5087 --data-dir D:\WechatInstances --no-browser
+.\.venv\Scripts\python.exe -m wechat_onebot launcher --port 5087 --data-dir ./instances --no-browser
 ```
 
 同一个数据目录只能有一个启动器，文件锁在退出或崩溃后由系统释放。不同启动器数据目录可以并行运行，端口需互不冲突。
@@ -50,7 +38,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\launcher\scripts\run_launcher.ps
 4. Helper 实例在自己的 WebUI 中扫描账号、绑定、配置 OneBot 节点并手动启动账号桥接。Mock 实例用于离线协议验证。
 5. 停止实例后可修改名称/端口、生成备份或归档删除。删除会将整个目录移动到 `archive/`，保留配置和消息数据。
 
-备份 ZIP 包含凭据与消息资料，保存于本地 `backups/`。首版不提供 ZIP 导入或自动恢复；可在关闭启动器后将自有备份解压回原实例 ID 目录，然后重启。解压前先保留现有目录，恢复后如端口冲突则通过启动器编辑。不要将备份内容叠加到正在运行的目录。
+备份 ZIP 包含凭据与消息资料，保存于管理数据目录的 `backups/`。手动恢复前应关闭启动器并保留原有目录，检查实例 ID、配置和端口，避免将备份叠加到现有运行实例。需要受管理的恢复流程时使用桌面应用。
 
 ## 进程和账号分层
 
@@ -61,16 +49,16 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\launcher\scripts\run_launcher.ps
        └─ 子进程 B → 实例 B WebUI → Runtime → 微信 PID B
 ```
 
-“运行中”表示实例服务完成启动并且子进程尚未退出；微信账号在线与 OneBot 节点连接情况应在实例 WebUI 查看。首版不进行持续 HTTP 活性探测或自动崩溃重启。进程异常退出后会显示退出码；再次启动可查看日志排查。实例互不依赖，停止 A 不会停止 B。
+“运行中”表示实例服务完成启动并且子进程尚未退出；微信账号在线与 OneBot 节点连接情况应在实例 WebUI 查看。此入口不进行持续 HTTP 活性探测或自动崩溃重启。进程异常退出后会显示退出码。实例互不依赖，停止一个不会停止其他实例。
 
-启动器不导入或覆盖 `bot/config.json`、`bot/data/accounts`、密码与自启配置；`bot/start.cmd` 继续管理单服务部署。启动器实例 WebUI 中的原“开机自启”功能会显示由启动器管理并拒绝更改旧单服务任务；首版请通过启动器手动启动。
+启动器不导入或覆盖 `bot/config.json`、`bot/data/accounts`、密码与自启配置；`bot/start.cmd` 管理单服务部署。启动器实例的自启由启动器负责，实例 WebUI 不修改单服务任务。
 
 同一用户下的所有本项目 Helper 驱动在连接前竞争微信 PID 的系统文件锁。锁在原生后端成功清理之后释放，清理失败保留锁并允许重试；进程终止后由操作系统释放。该锁不会阻止未采用此约定的其他程序操作微信。Windows 的 TEMP 设置不同可能导致锁目录不同，部署时应保持同一用户的 TEMP 配置一致。
 
 ## 数据目录
 
 ```text
-data/launcher/
+bot/data/launcher/
   launcher.lock
   instances/<32位随机ID>/
     instance.json
@@ -98,3 +86,5 @@ data/launcher/
 ## 验证范围
 
 自动化验证包含两个真实 Mock 服务子进程的独立启动与停止、数据与凭据隔离、端口冲突、停止后备份与归档、认证和请求来源校验、目录锁及跨进程 PID 锁。上述验证不会加载原生桥接，不证明多个真实微信账号在当前电脑上已经完成联调。
+
+实例清单与进程生命周期的分层设计参考 [AstrBot Launcher](https://github.com/AstrBotDevs/astrbot-launcher)，本管理入口使用 Python/FastAPI 实现。

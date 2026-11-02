@@ -21,9 +21,10 @@ is in `launcher/python/wechat_onebot/launcher`, and staging/build scripts are in
   puts downloaded bundle tools inside Cargo's target directory. No signing is
   configured and there is no automatic release/publication step.
 
-From the repository root, source the environment script, then use
-`launcher/scripts/build_desktop.ps1`, or run `npm.cmd run tauri -- build --bundles nsis`
-from `launcher/desktop`. Do not install a second Rust/MSVC toolchain for this shell.
+Configure tool paths as described in the [build guide](../../docs/building.md),
+then run `launcher/scripts/build_desktop.ps1` from the repository root. For an
+already staged runtime, the native build can also be invoked with
+`npm.cmd run tauri -- build --bundles nsis` from `launcher/desktop`.
 
 Release embeds `windows/app.manifest` with `requireAdministrator`. Debug embeds
 `windows/debug.manifest` with `asInvoker`. Both are GUI-subsystem executables.
@@ -130,7 +131,7 @@ profile or remove its data.
 
 ## Validation boundaries
 
-Use offline Mock backends for all shell QA. Compilation does not validate UAC
-consent, Task Scheduler registration/rollback, NSIS UI flows, tray behavior, or
-real native bridging. Never infer live injection/sending authorization from an
-offline build or test. No real injection/send is needed to validate this shell.
+Use offline Mock backends for shell QA. UAC prompts, Task Scheduler behavior,
+NSIS flows and tray interactions require separate Windows desktop acceptance.
+Real WeChat bridging is validated separately. See the
+[acceptance guide](../../docs/desktop-verification.md) for the procedure.

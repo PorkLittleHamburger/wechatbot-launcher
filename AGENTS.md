@@ -10,9 +10,9 @@ This directory is the WeChat OneBot Launcher within the shared `WechatBot` Git r
 - `webui/launcher.html`: browser management page retained for compatibility.
 - `scripts/`: runtime staging and desktop/installer build automation.
 - `tests/`: pytest coverage for the manager, desktop backend, packaging, and regressions.
-- `docs/`: architecture, usage, and verification records.
+- `docs/`: architecture, usage, build, and verification guides.
 
-Generated files such as `desktop/dist/`, `src-tauri/target/`, `resources/runtime/`, `.development/`, and repository-root `dist/` are not committed.
+Generated files such as `desktop/dist/`, `desktop/src-tauri/target/`, `desktop/src-tauri/resources/runtime/`, `.development/`, and repository-root `dist/` are not committed.
 
 ## Build, Test, and Development Commands
 
@@ -23,8 +23,8 @@ Generated files such as `desktop/dist/`, `src-tauri/target/`, `resources/runtime
 # Run launcher and integrated Python tests
 .venv/Scripts/python.exe -m pytest -q bot/tests launcher/tests -c bot/pyproject.toml
 
-# Build the verified offline Windows installer
-& 'D:/Tool/PowerShell-7.6.6-win-x64/pwsh.exe' -File launcher/scripts/build_desktop.ps1
+# Build the offline Windows installer after configuring tools per docs/building.md
+pwsh -File launcher/scripts/build_desktop.ps1
 
 # Frontend-only development and type/build checks
 cd launcher/desktop
