@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Only the bundled launcher UI can invoke shell commands. Instance WebUIs have no native permissions.",
+  "local": true,
+  "windows": ["main"],
+  "permissions": [
+    "allow-rpc",
+    "allow-open-instance",
+    "allow-reveal-workspace",
+    "allow-exit-app",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "dialog:allow-open"
+  ]
+}

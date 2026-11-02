@@ -1,0 +1,857 @@
+"""Offline desktop packages and lifecycle tests; never start a real helper."""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+import re
+import shutil
+import socket
+import stat
+import subprocess
+import sys
+import warnings
+import zipfile
+from pathlib import Path
+
+import httpx
+import pytest
+
+from wechat_onebot.config import AppConfig, ConfigError
+
+
+PROJECT = Path(__file__).resolve().parents[2] / "bot"
+MANIFEST = "VERSION_MANIFEST.json"
+
+
+def write_manifest(directory, version="0.8.0", **overrides):
+    files = {p.relative_to(directory).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+             for p in directory.rglob("*") if p.is_file() and p.name != MANIFEST}
+    manifest = {"package_schema": 1, "launcher_api": 1, "version": version,
+                "architecture": "windows-x64", "files": files, **overrides}
+    (directory / MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest
+
+
+@pytest.mark.asyncio
+async def test_release_catalog_uses_independent_launcher_repository(store, monkeypatch):
+    client_class = httpx.AsyncClient
+    requests = []
+
+    def catalog(request):
+        requests.append(str(request.url))
+        return httpx.Response(200, json=[])
+
+    def client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(catalog)
+        return client_class(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    assert await store.releases() == {"releases": []}
+    assert requests == ["https://api.github.com/repos/PorkLittleHamburger/wechat-onebot-launcher/releases"]
+
+
+@pytest.fixture
+def bundle_factory(tmp_path):
+    def make(version="0.8.0", *, runnable=False):
+        directory = tmp_path / f"bundle-{version}"
+        directory.mkdir()
+        if runnable:
+            shutil.copytree(PROJECT / "src" / "wechat_onebot", directory / "src" / "wechat_onebot",
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            shutil.copytree(PROJECT.parent / "launcher/python/wechat_onebot/launcher",
+                            directory / "src/wechat_onebot/launcher", dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            init = directory / "src" / "wechat_onebot" / "__init__.py"
+            init.write_text(re.sub(r'__version__ = "[^"]+"', f'__version__ = "{version}"',
+                                   init.read_text(encoding="utf-8")), encoding="utf-8")
+        else:
+            for name, content in {
+                "src/wechat_onebot/launcher/worker.py": b"# offline package fixture\n",
+                "src/wechat_onebot/__init__.py": f'__version__ = "{version}"\n'.encode(),
+            }.items():
+                path = directory / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+        for name, content in {
+            "python/python.exe": b"offline placeholder; never execute this file",
+            "webui/index.html": b"<html>offline package fixture</html>",
+            "vendor/helper/VENDORED_COMMIT.txt": b"offline-test-fixture\n",
+        }.items():
+            path = directory / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        write_manifest(directory, version)
+        return directory
+    return make
+
+
+def zip_bundle(directory, target, *, extra=(), prefix=""):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)  # Deliberately test duplicate entries.
+        with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in directory.rglob("*"):
+                if path.is_file():
+                    archive.write(path, prefix + path.relative_to(directory).as_posix())
+            for name, content in extra:
+                archive.writestr(name, content)
+    return target
+
+
+@pytest.fixture
+def store(tmp_path):
+    from wechat_onebot.launcher.versions import VersionStore
+    return VersionStore(tmp_path / "store")
+
+
+def tree_bytes(root):
+    return {p.relative_to(root).as_posix(): p.read_bytes()
+            for p in root.rglob("*") if p.is_file()}
+
+
+@pytest.mark.asyncio
+async def test_import_version_verifies_content_and_survives_new_store(store, bundle_factory, tmp_path):
+    from wechat_onebot.launcher.versions import VersionStore
+    bundle = bundle_factory()
+    expected = tree_bytes(bundle)
+    archive = zip_bundle(bundle, tmp_path / "runtime.zip")
+    original = archive.read_bytes()
+    row = await store.import_archive(archive)
+    assert row["version"] == "0.8.0"
+    assert [r["version"] for r in store.list()] == ["0.8.0"]
+    installed = store.resolve("0.8.0")
+    assert installed.is_dir()
+    assert tree_bytes(installed) == expected
+    assert archive.read_bytes() == original
+    assert tree_bytes(bundle) == expected
+    reopened = VersionStore(tmp_path / "store")
+    assert reopened.resolve("0.8.0") == installed
+    assert [r["version"] for r in reopened.list()] == ["0.8.0"]
+
+
+@pytest.mark.asyncio
+async def test_import_keeps_versions_independent_and_refuses_overwrite(store, bundle_factory, tmp_path):
+    for version in ("0.8.0", "0.9.0"):
+        await store.import_archive(zip_bundle(bundle_factory(version), tmp_path / f"{version}.zip"))
+    first = store.resolve("0.8.0")
+    second = store.resolve("0.9.0")
+    assert first != second
+    before = tree_bytes(first)
+    assert (await store.import_archive(tmp_path / "0.8.0.zip"))["version"] == "0.8.0"
+    replacement = tmp_path / "bundle-0.8.0"
+    (replacement / "webui/index.html").write_bytes(b"different content under the same version")
+    write_manifest(replacement)
+    with pytest.raises(ConfigError):
+        await store.import_archive(zip_bundle(replacement, tmp_path / "replacement.zip"))
+    assert tree_bytes(first) == before
+    assert {r["version"] for r in store.list()} == {"0.8.0", "0.9.0"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", [
+    {"package_schema": 2}, {"launcher_api": 999}, {"architecture": "linux-x64"},
+    {"version": "../escape"}, {"version": "C:/escape"},
+])
+async def test_incompatible_or_unsafe_manifest_rejected(store, bundle_factory, tmp_path, change):
+    bundle = bundle_factory()
+    write_manifest(bundle, **change)
+    with pytest.raises(ConfigError):
+        await store.import_archive(zip_bundle(bundle, tmp_path / "invalid.zip"))
+    assert store.list() == []
+    assert not (tmp_path / "escape").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corruption", ["hash", "missing", "unlisted"])
+async def test_manifest_integrity_rejected_atomically(store, bundle_factory, tmp_path, corruption):
+    bundle = bundle_factory()
+    worker = bundle / "src/wechat_onebot/launcher/worker.py"
+    if corruption == "hash":
+        worker.write_bytes(b"tampered worker")
+    elif corruption == "missing":
+        worker.unlink()
+    else:
+        (bundle / "unlisted.py").write_bytes(b"unlisted payload")
+    with pytest.raises(ConfigError):
+        await store.import_archive(zip_bundle(bundle, tmp_path / "corrupt.zip"))
+    assert store.list() == []
+    with pytest.raises(ConfigError):
+        store.resolve("0.8.0")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", [
+    "../escape.txt", "../../escape.txt", "..\\escape.txt", "/escape.txt",
+    "C:/escape.txt", "C:escape.txt", "\\\\server\\share\\escape.txt",
+    "src/../../escape.txt", "src/wechat_onebot/launcher/worker.py",
+    "SRC/WECHAT_ONEBOT/LAUNCHER/WORKER.PY",
+])
+async def test_unsafe_or_duplicate_zip_paths_rejected(store, bundle_factory, tmp_path, entry):
+    bundle = bundle_factory()
+    archive = zip_bundle(bundle, tmp_path / "unsafe.zip", extra=[(entry, b"unsafe")])
+    with pytest.raises(ConfigError):
+        await store.import_archive(archive)
+    assert store.list() == []
+    assert not (tmp_path / "escape.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_zip_symlink_rejected(store, bundle_factory, tmp_path):
+    bundle = bundle_factory()
+    archive = zip_bundle(bundle, tmp_path / "symlink.zip")
+    link = zipfile.ZipInfo("vendor/helper/link")
+    link.create_system = 3
+    link.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(archive, "a") as output:
+        output.writestr(link, "../../../escape")
+    with pytest.raises(ConfigError):
+        await store.import_archive(archive)
+    assert store.list() == []
+
+
+@pytest.mark.asyncio
+async def test_referenced_version_cannot_be_removed(store, bundle_factory, tmp_path):
+    await store.import_archive(zip_bundle(bundle_factory(), tmp_path / "runtime.zip"))
+    before = tree_bytes(store.resolve("0.8.0"))
+    with pytest.raises(ConfigError):
+        store.remove("0.8.0", referenced_versions={"0.8.0"})
+    assert tree_bytes(store.resolve("0.8.0")) == before
+    store.remove("0.8.0", referenced_versions=set())
+    assert store.list() == []
+    with pytest.raises(ConfigError):
+        store.resolve("0.8.0")
+
+
+@pytest.mark.asyncio
+async def test_single_wrapped_bundle_imports_and_failed_import_leaves_no_staging(store, bundle_factory, tmp_path):
+    bundle = bundle_factory()
+    await store.import_archive(zip_bundle(bundle, tmp_path / "wrapped.zip", prefix="runtime/"))
+    before = tree_bytes(store.resolve("0.8.0"))
+    malformed = tmp_path / "not-a-zip.zip"
+    malformed.write_bytes(b"not a ZIP file")
+    with pytest.raises(ConfigError):
+        await store.import_archive(malformed)
+    assert tree_bytes(store.resolve("0.8.0")) == before
+    assert list((store.root / ".staging").iterdir()) == []
+
+
+def free_port():
+    with socket.socket() as sock:
+        if os.name == "nt":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+@pytest.fixture
+async def desktop(tmp_path, bundle_factory, monkeypatch):
+    from wechat_onebot.launcher.desktop_manager import DesktopManager
+    bundled = bundle_factory("0.8.0", runnable=True)
+    manager = DesktopManager(tmp_path / "desktop", bundled)
+    await manager.initialize()
+    launch_parameters = manager._launch_parameters
+    launches = []
+
+    def offline_python(instance_id):
+        python, project = launch_parameters(instance_id)
+        # Verify real version selection, replacing only the dummy embedded interpreter.
+        assert Path(python) == project / "python" / "python.exe"
+        assert Path(python).is_file()
+        launches.append((instance_id, Path(python), project))
+        return sys.executable, project
+
+    monkeypatch.setattr(manager, "_launch_parameters", offline_python)
+    manager._test_launches = launches
+    try:
+        yield manager
+    finally:
+        await manager.close()
+
+
+async def add_version(manager, bundle_factory, tmp_path, version="0.9.0"):
+    bundle = bundle_factory(version, runnable=True)
+    return await manager.versions.import_archive(zip_bundle(bundle, tmp_path / f"{version}.zip"))
+
+
+@pytest.mark.asyncio
+async def test_desktop_initializes_bundled_version_and_reopens_without_duplicate(desktop):
+    versions = desktop.versions.list()
+    assert [row["version"] for row in versions] == ["0.8.0"]
+    await desktop.initialize()
+    assert desktop.versions.list() == versions
+    row = await desktop.create("Bundled Mock", "mock", free_port())
+    assert row["version"] == "0.8.0"
+    assert desktop.metadata(row["id"])["version"] == "0.8.0"
+    assert desktop.rows()[0]["state"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_two_real_desktop_mock_workers_use_separate_version_projects(desktop, bundle_factory, tmp_path):
+    await add_version(desktop, bundle_factory, tmp_path)
+    first = await desktop.create("First version", "mock", free_port(), version="0.8.0")
+    second = await desktop.create("Second version", "mock", free_port(), version="0.9.0")
+    configs = [AppConfig.load(desktop.directory(row["id"]) / "config.json") for row in (first, second)]
+    assert all(config.driver.type == "mock" for config in configs)
+    assert configs[0].webui.access_token != configs[1].webui.access_token
+    assert configs[0].storage.data_dir != configs[1].storage.data_dir
+    processes = []
+    try:
+        await asyncio.gather(*(desktop.start(row["id"]) for row in (first, second)))
+        slots = [desktop.slots[row["id"]] for row in (first, second)]
+        processes = [slot.process for slot in slots]
+        assert all(p is not None and p.poll() is None for p in processes)
+        assert len({p.pid for p in processes} | {os.getpid()}) == 3
+        launches = {instance_id: (python, project) for instance_id, python, project in desktop._test_launches}
+        assert launches[first["id"]][0] != launches[second["id"]][0]
+        assert launches[first["id"]][1] == desktop.versions.resolve("0.8.0")
+        assert launches[second["id"]][1] == desktop.versions.resolve("0.9.0")
+        async with httpx.AsyncClient(trust_env=False, timeout=5) as browser:
+            for row, slot, config in zip((first, second), slots, configs):
+                url = f"http://127.0.0.1:{row['port']}"
+                health = await browser.get(f"{url}/_launcher/health", headers={"X-Launcher-Probe": slot.probe})
+                assert health.status_code == 200
+                assert health.json() == {"identity": slot.probe}
+                assert (await browser.post(f"{url}/api/login", json={"token": config.webui.access_token})).status_code == 200
+                assert (await browser.post(f"{url}/api/setup-password", json={"password": "offline version password"})).status_code == 200
+                status = await browser.get(f"{url}/api/status")
+                assert status.status_code == 200
+                assert status.json()["driver"] == "mock"
+                assert status.json()["version"] == row["version"]
+            assert (await browser.get(f"http://127.0.0.1:{first['port']}/api/status")).status_code == 200
+            await desktop.stop(first["id"])
+            assert processes[0].poll() is not None
+            assert processes[1].poll() is None
+            assert (await browser.get(f"http://127.0.0.1:{second['port']}/api/status")).status_code == 200
+    finally:
+        await desktop.close()
+    assert all(p.poll() is not None for p in processes)
+
+
+def seed_instance(manager, row):
+    from wechat_onebot.webui.auth import PasswordStore
+    config = AppConfig.load(manager.directory(row["id"]) / "config.json")
+    PasswordStore(config.storage.data_dir / "webui-auth.json").set("preserved offline password")
+    config.storage.media_dir.mkdir(parents=True, exist_ok=True)
+    (config.storage.media_dir / "payload.bin").write_bytes(b"\x00preserve media\xff")
+    return config
+
+
+def assert_preserved(manager, row, original):
+    config = AppConfig.load(manager.directory(row["id"]) / "config.json")
+    assert config.webui.access_token == original.webui.access_token
+    assert config.onebot.access_token == original.onebot.access_token
+    assert config.webui.port == row["port"]
+    assert config.driver.type == "mock"
+    assert config.driver.helper_root == manager.versions.resolve(row["version"]) / "vendor/helper"
+    assert config.storage.data_dir.is_relative_to(manager.directory(row["id"]))
+    assert config.storage.media_dir.is_relative_to(manager.directory(row["id"]))
+    assert (config.storage.media_dir / "payload.bin").read_bytes() == b"\x00preserve media\xff"
+    assert (config.storage.data_dir / "webui-auth.json").read_bytes() == (
+        original.storage.data_dir / "webui-auth.json").read_bytes()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_prebacks_up_healthchecks_new_version_and_leaves_stopped(desktop, bundle_factory, tmp_path):
+    await add_version(desktop, bundle_factory, tmp_path)
+    row = await desktop.create("Upgrade Mock", "mock", free_port(), version="0.8.0")
+    original = seed_instance(desktop, row)
+    original_auth = (original.storage.data_dir / "webui-auth.json").read_bytes()
+    result = await desktop.upgrade(row["id"], "0.9.0")
+    assert result["ok"] is True
+    assert result["version"] == "0.9.0"
+    upgraded = desktop.metadata(row["id"])
+    assert upgraded["version"] == "0.9.0"
+    assert upgraded["port"] == row["port"]
+    assert_preserved(desktop, upgraded, original)
+    assert (original.storage.data_dir / "webui-auth.json").read_bytes() == original_auth
+    assert desktop.slots[row["id"]].process is None
+    assert desktop.rows()[0]["state"] == "stopped"
+    assert not (desktop.directory(row["id"]) / "upgrade.json").exists()
+    assert desktop._test_launches[-1][2] == desktop.versions.resolve("0.9.0")
+    with zipfile.ZipFile(desktop.root / "backups" / result["backup"]) as backup:
+        assert json.loads(backup.read("instance.json"))["version"] == "0.8.0"
+        old_config = json.loads(backup.read("config.json"))
+        assert old_config["webui"]["access_token"] == original.webui.access_token
+        assert backup.read("data/media/payload.bin") == b"\x00preserve media\xff"
+        assert backup.read("data/webui-auth.json") == original_auth
+        assert "upgrade.json" not in backup.namelist()
+    # The healthchecked replacement remains usable with the preserved password.
+    await desktop.start(row["id"])
+    async with httpx.AsyncClient(trust_env=False, timeout=5) as browser:
+        url = f"http://127.0.0.1:{row['port']}"
+        assert (await browser.post(f"{url}/api/login", json={"password": "preserved offline password"})).status_code == 200
+        assert (await browser.get(f"{url}/api/status")).json()["version"] == "0.9.0"
+
+
+@pytest.mark.asyncio
+async def test_failed_upgrade_reaps_child_and_restores_prior_version_and_data(desktop, bundle_factory, tmp_path):
+    bad = bundle_factory("0.9.0", runnable=True)
+    (bad / "src/wechat_onebot/launcher/worker.py").write_text("raise SystemExit(19)\n", encoding="utf-8")
+    write_manifest(bad, "0.9.0")
+    await desktop.versions.import_archive(zip_bundle(bad, tmp_path / "broken-runtime.zip"))
+    row = await desktop.create("Rollback Mock", "mock", free_port(), version="0.8.0")
+    original = seed_instance(desktop, row)
+    auth_bytes = (original.storage.data_dir / "webui-auth.json").read_bytes()
+    with pytest.raises(ConfigError, match="回滚"):
+        await desktop.upgrade(row["id"], "0.9.0")
+    restored = desktop.metadata(row["id"])
+    assert restored["version"] == "0.8.0"
+    assert restored["port"] == row["port"]
+    assert_preserved(desktop, restored, original)
+    assert (original.storage.data_dir / "webui-auth.json").read_bytes() == auth_bytes
+    assert desktop.slots[row["id"]].process is None
+    assert desktop.slots[row["id"]].state == "stopped"
+    assert not (desktop.directory(row["id"]) / "upgrade.json").exists()
+    assert len(desktop.backups()) == 1
+    await desktop.start(row["id"])
+    async with httpx.AsyncClient(trust_env=False, timeout=5) as client:
+        health = await client.get(f"http://127.0.0.1:{row['port']}/healthz")
+        assert health.status_code == 200 and health.json()["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_upgrade_requires_stopped_instance_without_interrupting_worker(desktop, bundle_factory, tmp_path):
+    await add_version(desktop, bundle_factory, tmp_path)
+    row = await desktop.create("Running Mock", "mock", free_port(), version="0.8.0")
+    await desktop.start(row["id"])
+    process = desktop.slots[row["id"]].process
+    with pytest.raises(ConfigError, match="停止"):
+        await desktop.upgrade(row["id"], "0.9.0")
+    assert process.poll() is None
+    assert desktop.metadata(row["id"])["version"] == "0.8.0"
+    assert desktop.backups() == []
+    assert not (desktop.directory(row["id"]) / "upgrade.json").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("external", [False, True])
+async def test_restore_backup_creates_stopped_new_id_and_port_preserving_source(desktop, tmp_path, external):
+    row = await desktop.create("Backup Mock", "mock", free_port(), version="0.8.0")
+    original = seed_instance(desktop, row)
+    name = await desktop.backup(row["id"])
+    source = desktop.root / "backups" / name
+    original_archive = source.read_bytes()
+    original_files = tree_bytes(desktop.directory(row["id"]))
+    if external:
+        source = tmp_path / "imported-backup.zip"
+        source.write_bytes(original_archive)
+        restored = await desktop.restore(path=source)
+    else:
+        restored = await desktop.restore(name)
+    assert restored["id"] != row["id"]
+    assert restored["port"] != row["port"]
+    assert restored["version"] == row["version"]
+    assert_preserved(desktop, restored, original)
+    assert source.read_bytes() == original_archive
+    assert tree_bytes(desktop.directory(row["id"])) == original_files
+    assert {r["state"] for r in desktop.rows()} == {"stopped"}
+    assert desktop._test_launches == []
+    await desktop.start(restored["id"])
+    async with httpx.AsyncClient(trust_env=False, timeout=5) as client:
+        url = f"http://127.0.0.1:{restored['port']}"
+        assert (await client.post(f"{url}/api/login", json={"password": "preserved offline password"})).status_code == 200
+        assert (await client.get(f"{url}/api/status")).json()["version"] == "0.8.0"
+
+
+@pytest.mark.asyncio
+async def test_restore_archive_preserves_archived_copy_and_credentials(desktop):
+    row = await desktop.create("Archived Mock", "mock", free_port(), version="0.8.0")
+    original = seed_instance(desktop, row)
+    token = original.webui.access_token
+    auth = (original.storage.data_dir / "webui-auth.json").read_bytes()
+    await desktop.archive(row["id"])
+    archived, = desktop.archives()
+    directory = desktop.root / "archive" / archived["archive_name"]
+    before = tree_bytes(directory)
+    restored = await desktop.restore_archive(archived["archive_name"])
+    assert restored["id"] != row["id"]
+    assert restored["version"] == row["version"]
+    config = AppConfig.load(desktop.directory(restored["id"]) / "config.json")
+    assert config.webui.access_token == token
+    assert (config.storage.data_dir / "webui-auth.json").read_bytes() == auth
+    assert (config.storage.media_dir / "payload.bin").read_bytes() == b"\x00preserve media\xff"
+    assert tree_bytes(directory) == before
+    assert desktop.rows()[0]["state"] == "stopped"
+    assert desktop.archives() == [archived]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["../outside.zip", "..\\outside.zip", "/outside.zip", "C:/outside.zip"])
+async def test_restore_names_cannot_escape_managed_directories(desktop, name):
+    with pytest.raises(ConfigError):
+        await desktop.restore(name)
+    with pytest.raises(ConfigError):
+        await desktop.restore_archive(name)
+    assert desktop.rows() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attack", ["traversal", "storage_escape", "missing_version"])
+async def test_invalid_backup_restore_leaves_no_instance(desktop, tmp_path, attack):
+    row = await desktop.create("Invalid restore source", "mock", free_port(), version="0.8.0")
+    name = await desktop.backup(row["id"])
+    source = desktop.root / "backups" / name
+    with zipfile.ZipFile(source) as archive:
+        entries = {name: archive.read(name) for name in archive.namelist()}
+    if attack == "traversal":
+        entries["../escape.txt"] = b"outside"
+    elif attack == "storage_escape":
+        config = json.loads(entries["config.json"])
+        config["storage"]["data_dir"] = str(tmp_path / "outside-data")
+        entries["config.json"] = json.dumps(config).encode()
+    else:
+        metadata = json.loads(entries["instance.json"])
+        metadata["version"] = "9.9.9"
+        entries["instance.json"] = json.dumps(metadata).encode()
+    corrupt = tmp_path / "invalid-backup.zip"
+    with zipfile.ZipFile(corrupt, "w") as archive:
+        for name, content in entries.items():
+            archive.writestr(name, content)
+    before = tree_bytes(desktop.directory(row["id"]))
+    with pytest.raises(ConfigError):
+        await desktop.restore(path=corrupt)
+    assert [r["id"] for r in desktop.rows()] == [row["id"]]
+    assert tree_bytes(desktop.directory(row["id"])) == before
+    assert not (tmp_path / "outside-data").exists()
+    assert not (desktop.root / "escape.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_desktop_snapshot_and_settings_persist_with_strict_validation(desktop):
+    before = desktop.snapshot()
+    assert before["instances"] == []
+    assert before["backups"] == []
+    assert before["archives"] == []
+    assert before["root"] == str(desktop.root)
+    assert [r["version"] for r in before["versions"]] == ["0.8.0"]
+    updated = desktop.save_settings({"close_to_tray": False, "restore_instances": True})
+    assert updated["close_to_tray"] is False and updated["restore_instances"] is True
+    from wechat_onebot.launcher.desktop_manager import DesktopManager
+    reopened = DesktopManager(desktop.root, desktop.project)
+    assert reopened.settings() == updated
+    for invalid in ({"unknown": True}, {"autostart": "true"}, {"autostart": 1}):
+        with pytest.raises(ConfigError):
+            desktop.save_settings(invalid)
+        assert desktop.settings() == updated
+
+
+@pytest.fixture
+async def metadata_desktop(tmp_path, bundle_factory):
+    from wechat_onebot.launcher.desktop_manager import DesktopManager
+    manager = DesktopManager(tmp_path / "metadata-desktop", bundle_factory())
+    await manager.initialize()
+    try:
+        yield manager
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_roundtrip_and_progress_without_launching_workers(metadata_desktop):
+    from wechat_onebot.launcher.supervisor import Dispatcher
+    events = []
+    dispatcher = Dispatcher(metadata_desktop, events.append)
+    row = await dispatcher.dispatch("create", {"name": "RPC Mock", "mode": "mock", "port": free_port()})
+    assert row["version"] == "0.8.0"
+    assert [event["data"]["progress"] for event in events] == [0, 100]
+    assert all(event["event"] == "operation-progress" and event["data"]["operation"] == "create"
+               for event in events)
+    snapshot = await dispatcher.dispatch("snapshot")
+    assert snapshot["instances"][0]["id"] == row["id"]
+    assert snapshot["instances"][0]["state"] == "stopped"
+    config = AppConfig.load(metadata_desktop.directory(row["id"]) / "config.json")
+    assert await dispatcher.dispatch("credentials", {"id": row["id"]}) == {"token": config.webui.access_token}
+    assert "text" in await dispatcher.dispatch("logs", {"id": row["id"]})
+    with pytest.raises(ConfigError, match="启动"):
+        await dispatcher.dispatch("instance_info", {"id": row["id"]})
+    assert (await dispatcher.dispatch("settings_set", {"close_to_tray": False}))["close_to_tray"] is False
+    assert (await dispatcher.dispatch("settings_get"))["close_to_tray"] is False
+    backup = await dispatcher.dispatch("backup", {"id": row["id"]})
+    restored = await dispatcher.dispatch("restore", backup)
+    assert restored["id"] != row["id"]
+    with pytest.raises(ConfigError, match="引用"):
+        await dispatcher.dispatch("version_remove", {"version": "0.8.0"})
+    assert await dispatcher.dispatch("archive", {"id": row["id"]}) == {"ok": True}
+    archived = (await dispatcher.dispatch("snapshot"))["archives"][0]
+    assert (await dispatcher.dispatch("restore_archive", {
+        "archive_name": archived["archive_name"]}))["id"] not in {row["id"], restored["id"]}
+    seed_instance(metadata_desktop, restored)
+    with pytest.raises(ConfigError, match="密码"):
+        await dispatcher.dispatch("credentials", {"id": restored["id"]})
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_imports_and_removes_only_unreferenced_version(metadata_desktop, bundle_factory, tmp_path):
+    from wechat_onebot.launcher.supervisor import Dispatcher
+    dispatcher = Dispatcher(metadata_desktop)
+    source = zip_bundle(bundle_factory("0.9.0"), tmp_path / "rpc-runtime.zip")
+    imported = await dispatcher.dispatch("version_import", {"path": str(source)})
+    assert imported["version"] == "0.9.0"
+    assert {r["version"] for r in await dispatcher.dispatch("versions_list")} == {"0.8.0", "0.9.0"}
+    assert await dispatcher.dispatch("version_remove", {"version": "0.9.0"}) == {"ok": True}
+    assert [r["version"] for r in await dispatcher.dispatch("versions_list")] == ["0.8.0"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,params", [("unknown-method", {}), ("snapshot", ["invalid"]),
+                                         ("settings_set", {"autostart": 1})])
+async def test_dispatcher_rejects_invalid_calls_without_changing_instances(metadata_desktop, method, params):
+    from wechat_onebot.launcher.supervisor import Dispatcher
+    dispatcher = Dispatcher(metadata_desktop)
+    before = metadata_desktop.snapshot()
+    with pytest.raises(ConfigError):
+        await dispatcher.dispatch(method, params)
+    assert metadata_desktop.snapshot() == before
+
+
+class SupervisorProtocol:
+    def __init__(self, process, root, stderr):
+        self.process = process
+        self.root = root
+        self.stderr = stderr
+        self.events = []
+        self.sequence = 0
+
+    async def frame(self):
+        line = await asyncio.wait_for(self.process.stdout.readline(), timeout=40)
+        assert line, f"Supervisor closed stdout: {self.stderr.read_text(encoding='utf-8', errors='replace')}"
+        value = json.loads(line)
+        assert isinstance(value, dict), value
+        return value
+
+    async def send(self, payload, request_id):
+        self.process.stdin.write(payload + b"\n")
+        await self.process.stdin.drain()
+        while True:
+            frame = await self.frame()
+            if "event" in frame:
+                self.events.append(frame)
+                assert frame["event"] != "fatal", frame
+            else:
+                assert frame.get("id") == request_id, frame
+                assert ("result" in frame) != ("error" in frame), frame
+                return frame
+
+    async def call(self, method, params=None):
+        self.sequence += 1
+        request = {"id": self.sequence, "method": method, "params": params or {}}
+        response = await self.send(json.dumps(request).encode(), self.sequence)
+        assert "error" not in response, response
+        return response["result"]
+
+    async def eof(self):
+        self.process.stdin.close()
+        assert await asyncio.wait_for(self.process.wait(), timeout=25) == 0
+
+
+@pytest.fixture
+async def supervisor(tmp_path, bundle_factory):
+    # Use a real embedded runtime when available; no venv or DLL tree is copied.
+    portable = next((p for p in sorted((PROJECT.parent / "dist").glob("wechat-onebot-portable-*"), reverse=True)
+                     if (p / "python/python.exe").is_file()
+                     and (p / "src/wechat_onebot/launcher/worker.py").is_file()), None)
+    python = portable / "python/python.exe" if portable else Path(sys.executable)
+    worker_project = portable or PROJECT
+    bundled = bundle_factory()
+    root = tmp_path / "supervisor-data"
+    # Load current supervisor source with the installed runtime's dependencies.
+    # Only launch parameters are substituted: worker lifecycle and IPC stay real.
+    script = (
+        f"import sys; sys.path.insert(0, {str(PROJECT / 'src')!r}); "
+        "from wechat_onebot.launcher.desktop_manager import DesktopManager; "
+        f"DesktopManager._launch_parameters = lambda self, instance_id: ({str(python)!r}, "
+        f"__import__('pathlib').Path({str(worker_project)!r})); "
+        "from wechat_onebot.launcher.supervisor import main; main()"
+    )
+    stderr = tmp_path / "supervisor-stderr.log"
+    with stderr.open("wb") as output:
+        process = await asyncio.create_subprocess_exec(
+            str(python), "-B", "-u", "-c", script, "--root", str(root), "--project", str(bundled),
+            cwd=PROJECT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=output,
+            env=dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1"),
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        protocol = SupervisorProtocol(process, root, stderr)
+        try:
+            ready = await protocol.frame()
+            assert ready == {"event": "ready", "data": {"root": str(root), "protocol": 1}}
+            yield protocol
+        finally:
+            if process.returncode is None:
+                process.stdin.close()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=25)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+
+
+@pytest.mark.asyncio
+async def test_supervisor_json_lines_correlates_errors_and_remains_usable(supervisor):
+    snapshot = await supervisor.call("snapshot")
+    assert snapshot["instances"] == []
+    assert [r["version"] for r in snapshot["versions"]] == ["0.8.0"]
+    for payload, request_id in ((b"not json", None), (b"[]", None),
+                                (b'{"id":true,"method":"snapshot"}', True),
+                                (b'{"id":"bad-call","method":"unknown"}', "bad-call")):
+        assert "error" in await supervisor.send(payload, request_id)
+    row = await supervisor.call("create", {"name": "Protocol Mock", "mode": "mock", "port": free_port()})
+    assert row["mode"] == "mock"
+    assert any(event["event"] == "operation-progress" and event["data"]["progress"] == 100
+               for event in supervisor.events)
+    assert (await supervisor.call("snapshot"))["instances"][0]["id"] == row["id"]
+    assert await supervisor.call("shutdown") == {"ok": True}
+    assert await asyncio.wait_for(supervisor.process.wait(), timeout=10) == 0
+
+
+@pytest.mark.asyncio
+async def test_supervisor_stdin_eof_stops_real_mock_child_and_releases_leases(supervisor):
+    from wechat_onebot.launcher.locking import DirectoryLease
+    row = await supervisor.call("create", {"name": "EOF Mock", "mode": "mock", "port": free_port()})
+    assert await supervisor.call("start", {"id": row["id"]}) == {"ok": True}
+    running = await supervisor.call("instance_info", {"id": row["id"]})
+    assert running["state"] == "running"
+    assert running["pid"] not in (None, os.getpid(), supervisor.process.pid)
+    process_handle = None
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        process_handle = kernel.OpenProcess(0x100000, False, running["pid"])
+        assert process_handle, ctypes.get_last_error()
+    try:
+        async with httpx.AsyncClient(trust_env=False, timeout=5) as client:
+            assert (await client.get(f"http://127.0.0.1:{row['port']}/healthz")).json()["ok"] is True
+        await supervisor.eof()
+        if process_handle:
+            assert kernel.WaitForSingleObject(process_handle, 0) == 0
+        for directory in (supervisor.root, supervisor.root / "instances" / row["id"]):
+            lease = DirectoryLease(directory)
+            lease.close()
+        with socket.socket() as probe:
+            probe.settimeout(1)
+            assert probe.connect_ex(("127.0.0.1", row["port"])) != 0
+    finally:
+        if process_handle:
+            kernel.CloseHandle(process_handle)
+
+
+def seed_absolute_storage(manager, row):
+    directory = manager.directory(row["id"])
+    path = directory / "config.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["storage"].update(data_dir=str(directory / "workspace data"),
+                          media_dir=str(directory / "media files"))
+    path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    config = seed_instance(manager, row)
+    (config.storage.data_dir / "persisted.bin").write_bytes(b"\x00absolute storage data\xff")
+    manager.check_config(row["id"])
+    return config
+
+
+@pytest.mark.asyncio
+async def test_absolute_local_storage_backup_restore_keeps_live_config_unchanged(desktop):
+    row = await desktop.create("Absolute backup", "mock", free_port(), version="0.8.0")
+    original = seed_absolute_storage(desktop, row)
+    directory = desktop.directory(row["id"])
+    live_config = (directory / "config.json").read_bytes()
+    original_data = tree_bytes(original.storage.data_dir)
+    original_media = tree_bytes(original.storage.media_dir)
+    name = await desktop.backup(row["id"])
+    backup = desktop.root / "backups" / name
+    backup_bytes = backup.read_bytes()
+    assert (directory / "config.json").read_bytes() == live_config
+    with zipfile.ZipFile(backup) as archive:
+        saved = json.loads(archive.read("config.json"))
+        assert saved["storage"]["data_dir"] == "workspace data"
+        assert saved["storage"]["media_dir"] == "media files"
+        assert not any(Path(saved["storage"][key]).is_absolute() for key in ("data_dir", "media_dir"))
+    restored = await desktop.restore(name)
+    assert restored["id"] != row["id"]
+    assert restored["port"] != row["port"]
+    assert restored["version"] == "0.8.0"
+    assert_preserved(desktop, restored, original)
+    config = AppConfig.load(desktop.directory(restored["id"]) / "config.json")
+    assert tree_bytes(config.storage.data_dir) == original_data
+    assert tree_bytes(config.storage.media_dir) == original_media
+    assert (directory / "config.json").read_bytes() == live_config
+    assert backup.read_bytes() == backup_bytes
+    assert {r["state"] for r in desktop.rows()} == {"stopped"}
+
+
+@pytest.mark.asyncio
+async def test_absolute_local_storage_failed_upgrade_rolls_back_without_journal(
+    desktop, bundle_factory, tmp_path, monkeypatch,
+):
+    bad = bundle_factory("0.9.0", runnable=True)
+    (bad / "src/wechat_onebot/launcher/worker.py").write_text("raise SystemExit(19)\n", encoding="utf-8")
+    write_manifest(bad, "0.9.0")
+    await desktop.versions.import_archive(zip_bundle(bad, tmp_path / "absolute-broken-runtime.zip"))
+    row = await desktop.create("Absolute rollback", "mock", free_port(), version="0.8.0")
+    original = seed_absolute_storage(desktop, row)
+    original_data = tree_bytes(original.storage.data_dir)
+    original_media = tree_bytes(original.storage.media_dir)
+    processes = []
+    popen = subprocess.Popen
+
+    def record_spawn(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr("wechat_onebot.launcher.manager.subprocess.Popen", record_spawn)
+    with pytest.raises(ConfigError, match="回滚"):
+        await desktop.upgrade(row["id"], "0.9.0")
+    restored = desktop.metadata(row["id"])
+    assert restored["version"] == "0.8.0"
+    assert restored["port"] == row["port"]
+    assert_preserved(desktop, restored, original)
+    config = AppConfig.load(desktop.directory(row["id"]) / "config.json")
+    assert tree_bytes(config.storage.data_dir) == original_data
+    assert tree_bytes(config.storage.media_dir) == original_media
+    assert not (desktop.directory(row["id"]) / "upgrade.json").exists()
+    assert desktop.slots[row["id"]].process is None
+    assert desktop.rows()[0]["state"] == "stopped"
+    assert len(processes) == 1
+    assert processes[0].poll() is not None and processes[0].stdin.closed
+    assert len(desktop.backups()) == 1
+    desktop.check_config(row["id"])
+
+
+@pytest.mark.asyncio
+async def test_absolute_local_storage_archive_restore_preserves_archived_data(desktop):
+    row = await desktop.create("Absolute archive", "mock", free_port(), version="0.8.0")
+    original = seed_absolute_storage(desktop, row)
+    original_data = tree_bytes(original.storage.data_dir)
+    original_media = tree_bytes(original.storage.media_dir)
+    await desktop.archive(row["id"])
+    archived, = desktop.archives()
+    directory = desktop.root / "archive" / archived["archive_name"]
+    assert not desktop.directory(row["id"]).exists()
+    raw = json.loads((directory / "config.json").read_text(encoding="utf-8"))
+    assert raw["storage"]["data_dir"] == "workspace data"
+    assert raw["storage"]["media_dir"] == "media files"
+    archived_config = AppConfig.load(directory / "config.json")
+    assert archived_config.storage.data_dir.is_relative_to(directory)
+    assert archived_config.storage.media_dir.is_relative_to(directory)
+    assert tree_bytes(archived_config.storage.data_dir) == original_data
+    assert tree_bytes(archived_config.storage.media_dir) == original_media
+    archived_files = tree_bytes(directory)
+    restored = await desktop.restore_archive(archived["archive_name"])
+    config = AppConfig.load(desktop.directory(restored["id"]) / "config.json")
+    assert restored["id"] != row["id"]
+    assert restored["version"] == "0.8.0"
+    assert config.webui.access_token == original.webui.access_token
+    assert config.onebot.access_token == original.onebot.access_token
+    assert config.storage.data_dir.is_relative_to(desktop.directory(restored["id"]))
+    assert config.storage.media_dir.is_relative_to(desktop.directory(restored["id"]))
+    assert tree_bytes(config.storage.data_dir) == original_data
+    assert tree_bytes(config.storage.media_dir) == original_media
+    assert tree_bytes(directory) == archived_files
+    assert desktop.archives() == [archived]
+    assert desktop.rows()[0]["state"] == "stopped"
