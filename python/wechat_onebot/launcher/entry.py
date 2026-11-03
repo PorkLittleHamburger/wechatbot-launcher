@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import argparse
+import os
 import secrets
 import threading
 import webbrowser
 from pathlib import Path
-
-from .. import __file__ as core_package_file
 
 import uvicorn
 
@@ -14,9 +14,22 @@ from .manager import LauncherManager
 from .server import create_launcher_app
 
 
+def runtime_source() -> Path:
+    raw = os.environ.get("WECHAT_RUNTIME_SOURCE")
+    if not raw:
+        raise RuntimeError(
+            "WECHAT_RUNTIME_SOURCE must point to the wechatbot gateway checkout."
+        )
+    root = Path(raw).resolve()
+    for candidate in (root, root / "bot"):
+        if (candidate / "src" / "wechat_onebot" / "__init__.py").is_file():
+            return candidate
+    raise RuntimeError(f"Invalid WECHAT_RUNTIME_SOURCE: {root}")
+
+
 def command_launcher(args) -> int:
-    project = Path(core_package_file).resolve().parents[2]
-    root = Path(args.data_dir).resolve() if args.data_dir else project / "data" / "launcher"
+    project = runtime_source()
+    root = Path(args.data_dir).resolve() if args.data_dir else Path.cwd() / "data" / "launcher"
     lease = DirectoryLease(root)
     try:
         manager = LauncherManager(root, project, args.port)
@@ -32,3 +45,15 @@ def command_launcher(args) -> int:
     finally:
         lease.close()
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="wechatbot-launcher")
+    parser.add_argument("--port", type=int, default=5088)
+    parser.add_argument("--data-dir", type=Path)
+    parser.add_argument("--no-browser", action="store_true")
+    return command_launcher(parser.parse_args(argv))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

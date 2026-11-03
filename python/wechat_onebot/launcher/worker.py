@@ -22,6 +22,12 @@ def main() -> None:
     app = create_webui_app(config, RuntimeManager(config), start_runtime=False,
                            cookie_name=f"wechat_onebot_webui_{config.path.parent.name}")
     app.state.launcher_managed = True
+    @app.middleware("http")
+    async def block_single_service_autostart(request, call_next):
+        if request.url.path == "/api/autostart":
+            return Response("实例自启由启动器管理", status_code=409)
+        return await call_next(request)
+
     secret = os.environ.pop("WECHAT_LAUNCHER_PROBE")
 
     @app.get("/_launcher/health")

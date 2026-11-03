@@ -21,7 +21,7 @@ from wechat_onebot.launcher.manager import LauncherManager
 from wechat_onebot.launcher.server import create_launcher_app
 
 
-PROJECT = Path(__file__).resolve().parents[2] / "bot"
+PROJECT = Path(os.environ["WECHAT_RUNTIME_SOURCE"]).resolve()
 BASE_URL = "http://127.0.0.1:5088"
 BOOTSTRAP_TOKEN = "offline-launcher-bootstrap"
 LAUNCHER_COOKIE_NAME = "launcher_session_5088"

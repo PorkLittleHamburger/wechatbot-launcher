@@ -1,17 +1,18 @@
 # 桌面验收指南
 
-本页描述可重复执行的验证步骤。实际测试结果应随相应构建产物记录；不同软件版本、Windows 环境和微信构建需要分别验证。
+本页描述启动器仓库可重复执行的验证步骤。实际测试结果应随相应构建产物记录；不同软件版本、Windows 环境和微信构建需要分别验证。
 
 ## 自动化检查
 
-按 [构建说明](building.md) 配置依赖后，在仓库根目录执行：
+按 [构建说明](building.md) 配置外部运行时和 Python 环境后，在仓库根目录执行：
 
 ```powershell
-.venv/Scripts/python.exe -m pytest -q bot/tests launcher/tests -c bot/pyproject.toml
-pwsh -File launcher/scripts/build_desktop.ps1
+$env:WECHAT_RUNTIME_SOURCE = 'D:\study\project\wechatbot'
+.venv/Scripts/python.exe -m pytest -q tests
+pwsh -File scripts/build_desktop.ps1
 ```
 
-完整构建包含 Python 回归、TypeScript 检查、前端生产构建和 Rust 测试。Rust 测试使用组装的 Python 运行时验证管理服务启动、请求响应及正常退出。
+完整构建包含启动器 Python 回归、外部运行时合并与校验、TypeScript 检查、前端生产构建和 Rust 测试。Rust 测试使用组装的 Python 运行时验证管理服务启动、请求响应及正常退出。
 
 | 范围 | 验证重点 |
 | --- | --- |
@@ -24,12 +25,26 @@ pwsh -File launcher/scripts/build_desktop.ps1
 
 版本测试使用本地构造的不同测试版本即可，无需发布 GitHub Release。默认使用 Mock，原生微信桥接单独验证。
 
+## 本次本地验证
+
+2026-11-03 在 Windows 环境使用外部 `wechatbot` 运行时源完成一次完整构建：
+
+| 检查 | 结果 |
+| --- | --- |
+| Python | 84 项通过；仅有现有 Starlette/httpx 弃用提示 |
+| 前端 | TypeScript 检查与 Vite 生产构建通过 |
+| Rust | 3 项通过，包括打包 Python 管理服务通信与正常退出 |
+| 运行时 | 0.8.0，清单记录 1,385 个文件，启动器 worker 已合并 |
+| 安装器 | `WeChat-OneBot-Launcher_0.8.0_x64-setup.exe`，SHA-256 `f5b36acf64549af1c707b5870390011eb5443bc3e3e06fca1480d6d9f97be7ce` |
+
+以上结果不替代 UAC、任务计划、NSIS 图形流程、托盘、真实安装卸载或真实微信桥接验证。
+
 ## 隔离安装验证
 
 在支持 Windows Sandbox 的主机上，构建安装器后运行：
 
 ```powershell
-pwsh -File launcher/scripts/test_installer_sandbox.ps1
+pwsh -File scripts/test_installer_sandbox.ps1
 ```
 
 脚本生成 `dist/WeChat-OneBot-Offline-Acceptance.wsb`，默认只生成配置。配置关闭网络和剪贴板，安装器目录以只读方式映射，结果输出到 `dist/installer-acceptance`。打开生成的 `.wsb`，或添加 `-Launch` 参数启动。也可使用独立 Windows 虚拟机验收。
@@ -51,4 +66,4 @@ pwsh -File launcher/scripts/test_installer_sandbox.ps1
 
 记录安装器文件名、SHA-256、应用版本、Windows 版本、测试步骤、结果和失败日志。截图与日志需去除账号凭据、Cookie、Token 和消息内容。将尚未执行的项目标记为未验证，不能以编译或 Mock 测试替代真实安装与桥接验证。
 
-真实微信收发检查见 [原生桥接验证指南](../../bot/docs/live-preflight.md)。
+真实微信收发检查见 [网关原生桥接验证指南](https://github.com/PorkLittleHamburger/wechatbot/blob/main/docs/live-preflight.md)。

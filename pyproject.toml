@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wechatbot-launcher"
+version = "0.8.0"
+description = "Windows desktop launcher and multi-instance manager for WeChat OneBot"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "httpx>=0.27,<1",
+  "uvicorn[standard]>=0.30,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+  "pytest-asyncio>=0.24,<1",
+]
+
+[project.scripts]
+wechatbot-launcher = "wechat_onebot.launcher.entry:main"
+
+[tool.setuptools.packages.find]
+where = ["python"]

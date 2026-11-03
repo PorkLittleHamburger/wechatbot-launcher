@@ -14,7 +14,7 @@ from pathlib import Path
 
 import httpx
 
-from .. import __version__
+from . import __version__
 from ..config import AppConfig, ConfigError, _atomic_write_json
 from .locking import DirectoryLease
 from .manager import LauncherManager, ProcessSlot

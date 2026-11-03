@@ -4,12 +4,13 @@ import hmac
 import json
 import secrets
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, StrictInt
 
-from .. import __version__
+from . import __version__
 from ..config import ConfigError
 from .manager import LauncherManager
 
@@ -78,7 +79,7 @@ def create_launcher_app(manager: LauncherManager, token: str) -> FastAPI:
     async def panel():
         panel_path = manager.project / "webui" / "launcher.html"
         if not panel_path.is_file():
-            panel_path = manager.project.parent / "launcher/webui/launcher.html"
+            panel_path = Path(__file__).resolve().parents[3] / "webui" / "launcher.html"
         return FileResponse(panel_path)
 
     @app.get("/api/status")

@@ -17,7 +17,7 @@ from wechat_onebot.launcher.locking import DirectoryLease
 from wechat_onebot.launcher.manager import LauncherManager
 
 
-PROJECT = Path(__file__).resolve().parents[2] / "bot"
+PROJECT = Path(os.environ["WECHAT_RUNTIME_SOURCE"]).resolve()
 
 
 @pytest.fixture

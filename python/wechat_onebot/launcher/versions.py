@@ -177,7 +177,7 @@ class VersionStore:
 
     async def releases(self) -> dict:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            response = await client.get("https://api.github.com/repos/PorkLittleHamburger/wechat-onebot-launcher/releases",
+            response = await client.get("https://api.github.com/repos/PorkLittleHamburger/wechatbot/releases",
                                         headers={"Accept": "application/vnd.github+json"})
             response.raise_for_status()
             rows = []

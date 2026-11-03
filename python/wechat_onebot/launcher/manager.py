@@ -204,8 +204,12 @@ class LauncherManager:
         python, project = self._launch_parameters(instance_id)
         slot.state, slot.error, slot.probe = "starting", "", secrets.token_urlsafe(32)
         env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1", WECHAT_LAUNCHER_PROBE=slot.probe)
-        # Keep source launch usable without editable installation.
-        env["PYTHONPATH"] = str(project / "src") + os.pathsep + env.get("PYTHONPATH", "")
+        # Source development keeps launcher modules ahead of the external runtime.
+        sources = [str(project / "src")]
+        launcher_source = os.environ.get("WECHAT_LAUNCHER_SOURCE")
+        if launcher_source and not (project / "src/wechat_onebot/launcher/worker.py").is_file():
+            sources.insert(0, str(Path(launcher_source).resolve()))
+        env["PYTHONPATH"] = os.pathsep.join(sources + [env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
         log = directory / "service.log"
         try:
             if log.exists() and log.stat().st_size > 5 * 1024 * 1024:

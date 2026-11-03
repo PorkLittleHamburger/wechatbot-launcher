@@ -1,0 +1,50 @@
+name: Windows launcher installer
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out gateway runtime source
+        uses: actions/checkout@v4
+        with:
+          repository: PorkLittleHamburger/wechatbot
+          path: runtime-source
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Prepare Python verification environment
+        shell: pwsh
+        run: |
+          $runtime = Join-Path $env:GITHUB_WORKSPACE 'runtime-source'
+          if (-not (Test-Path (Join-Path $runtime 'src/wechat_onebot/__init__.py'))) {
+            $runtime = Join-Path $runtime 'bot'
+          }
+          "WECHAT_RUNTIME_SOURCE=$runtime" >> $env:GITHUB_ENV
+          python -m venv .venv
+          .venv/Scripts/python.exe -m pip install -r (Join-Path $runtime 'requirements-runtime.lock')
+          .venv/Scripts/python.exe -m pip install -e '.[dev]'
+      - name: Build and verify offline installer
+        shell: pwsh
+        run: ./scripts/build_desktop.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WeChat-OneBot-Launcher-windows-x64
+          path: |
+            dist/*setup.exe
+            dist/*setup.exe.sha256
+            dist/wechat-onebot-runtime-*-windows-x64.zip

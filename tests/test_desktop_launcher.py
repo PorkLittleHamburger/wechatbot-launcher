@@ -21,7 +21,8 @@ import pytest
 from wechat_onebot.config import AppConfig, ConfigError
 
 
-PROJECT = Path(__file__).resolve().parents[2] / "bot"
+ROOT = Path(__file__).resolve().parents[1]
+PROJECT = Path(os.environ["WECHAT_RUNTIME_SOURCE"]).resolve()
 MANIFEST = "VERSION_MANIFEST.json"
 
 
@@ -49,7 +50,7 @@ async def test_release_catalog_uses_independent_launcher_repository(store, monke
 
     monkeypatch.setattr(httpx, "AsyncClient", client)
     assert await store.releases() == {"releases": []}
-    assert requests == ["https://api.github.com/repos/PorkLittleHamburger/wechat-onebot-launcher/releases"]
+    assert requests == ["https://api.github.com/repos/PorkLittleHamburger/wechatbot/releases"]
 
 
 @pytest.fixture
@@ -60,7 +61,7 @@ def bundle_factory(tmp_path):
         if runnable:
             shutil.copytree(PROJECT / "src" / "wechat_onebot", directory / "src" / "wechat_onebot",
                             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-            shutil.copytree(PROJECT.parent / "launcher/python/wechat_onebot/launcher",
+            shutil.copytree(ROOT / "python/wechat_onebot/launcher",
                             directory / "src/wechat_onebot/launcher", dirs_exist_ok=True,
                             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
             init = directory / "src" / "wechat_onebot" / "__init__.py"
@@ -648,7 +649,7 @@ class SupervisorProtocol:
 @pytest.fixture
 async def supervisor(tmp_path, bundle_factory):
     # Use a real embedded runtime when available; no venv or DLL tree is copied.
-    portable = next((p for p in sorted((PROJECT.parent / "dist").glob("wechat-onebot-portable-*"), reverse=True)
+    portable = next((p for p in sorted((ROOT / "dist").glob("wechat-onebot-portable-*"), reverse=True)
                      if (p / "python/python.exe").is_file()
                      and (p / "src/wechat_onebot/launcher/worker.py").is_file()), None)
     python = portable / "python/python.exe" if portable else Path(sys.executable)
@@ -658,7 +659,7 @@ async def supervisor(tmp_path, bundle_factory):
     # Load current supervisor source with the installed runtime's dependencies.
     # Only launch parameters are substituted: worker lifecycle and IPC stay real.
     script = (
-        f"import sys; sys.path.insert(0, {str(PROJECT / 'src')!r}); "
+        f"import sys; sys.path.insert(0, {str(ROOT / 'python')!r}); "
         "from wechat_onebot.launcher.desktop_manager import DesktopManager; "
         f"DesktopManager._launch_parameters = lambda self, instance_id: ({str(python)!r}, "
         f"__import__('pathlib').Path({str(worker_project)!r})); "

@@ -1,6 +1,6 @@
 # 浏览器多实例管理入口
 
-浏览器管理入口用于源码开发和兼容部署。它使用当前源码与 Python 环境管理多个独立服务实例。需要版本管理、托盘、实例升级及恢复时，使用 [桌面应用](desktop-launcher.md)。以下命令从仓库根目录执行。
+浏览器管理入口用于源码开发和兼容部署。它使用启动器源码、外部网关运行时与 Python 环境管理多个独立服务实例。需要版本管理、托盘、实例升级及恢复时，使用 [桌面应用](desktop-launcher.md)。以下命令从仓库根目录执行，并假定 `WECHAT_RUNTIME_SOURCE` 已指向 `wechatbot` 网关检出目录。
 
 ## 功能范围
 
@@ -8,10 +8,10 @@
 
 ## 启动
 
-双击 `launcher/launcher.cmd`，或在仓库根目录执行：
+双击仓库根目录的 `launcher.cmd`，或执行：
 
 ```powershell
-.\.venv\Scripts\python.exe -m wechat_onebot launcher
+.\.venv\Scripts\python.exe -m wechat_onebot.launcher.entry
 ```
 
 默认在 `http://127.0.0.1:5088/` 监听，自动打开附带临时凭据的本地入口，进入后清除地址中的凭据。控制台也显示入口地址。浏览器关闭后服务继续运行；关闭启动器进程会停止其管理的实例。
@@ -19,13 +19,13 @@
 Helper 模式需要管理员权限，可在管理员终端运行以上命令，或执行：
 
 ```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File .\launcher\scripts\run_launcher.ps1 -Elevated
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_launcher.ps1 -Elevated
 ```
 
 自定义启动器端口和数据目录：
 
 ```powershell
-.\.venv\Scripts\python.exe -m wechat_onebot launcher --port 5087 --data-dir ./instances --no-browser
+.\.venv\Scripts\python.exe -m wechat_onebot.launcher.entry --port 5087 --data-dir ./instances --no-browser
 ```
 
 同一个数据目录只能有一个启动器，文件锁在退出或崩溃后由系统释放。不同启动器数据目录可以并行运行，端口需互不冲突。
@@ -51,14 +51,14 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\launcher\scripts\run_launcher.ps
 
 “运行中”表示实例服务完成启动并且子进程尚未退出；微信账号在线与 OneBot 节点连接情况应在实例 WebUI 查看。此入口不进行持续 HTTP 活性探测或自动崩溃重启。进程异常退出后会显示退出码。实例互不依赖，停止一个不会停止其他实例。
 
-启动器不导入或覆盖 `bot/config.json`、`bot/data/accounts`、密码与自启配置；`bot/start.cmd` 管理单服务部署。启动器实例的自启由启动器负责，实例 WebUI 不修改单服务任务。
+启动器实例与网关单服务部署使用独立数据目录。启动器不读取或覆盖网关的配置、账号数据、密码与自启设置；实例自启由启动器负责，实例 WebUI 不修改网关单服务任务。
 
-同一用户下的所有本项目 Helper 驱动在连接前竞争微信 PID 的系统文件锁。锁在原生后端成功清理之后释放，清理失败保留锁并允许重试；进程终止后由操作系统释放。该锁不会阻止未采用此约定的其他程序操作微信。Windows 的 TEMP 设置不同可能导致锁目录不同，部署时应保持同一用户的 TEMP 配置一致。
+同一用户下的所有启动器管理 Helper 驱动在连接前竞争微信 PID 的系统文件锁。锁在原生后端成功清理之后释放，清理失败保留锁并允许重试；进程终止后由操作系统释放。该锁不会阻止未采用此约定的其他程序操作微信。Windows 的 TEMP 设置不同可能导致锁目录不同，部署时应保持同一用户的 TEMP 配置一致。
 
 ## 数据目录
 
 ```text
-bot/data/launcher/
+data/launcher/
   launcher.lock
   instances/<32位随机ID>/
     instance.json
