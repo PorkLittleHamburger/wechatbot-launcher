@@ -188,6 +188,22 @@ async def test_incompatible_or_unsafe_manifest_rejected(store, bundle_factory, t
 
 
 @pytest.mark.asyncio
+async def test_same_version_replacement_requires_no_references(store, bundle_factory, tmp_path):
+    await store.import_archive(zip_bundle(bundle_factory(), tmp_path / "original.zip"))
+    replacement = tmp_path / "replacement"
+    shutil.copytree(store.resolve("0.8.0"), replacement)
+    (replacement / "webui/index.html").write_text("<html>replacement</html>", encoding="utf-8")
+    write_manifest(replacement)
+    archive = zip_bundle(replacement, tmp_path / "replacement.zip")
+    with pytest.raises(ConfigError, match="不同内容"):
+        await store.import_archive(archive)
+    with pytest.raises(ConfigError, match="引用"):
+        await store.import_archive(archive, replace=True, referenced_versions={"0.8.0"})
+    await store.import_archive(archive, replace=True, referenced_versions=set())
+    assert (store.resolve("0.8.0") / "webui/index.html").read_text() == "<html>replacement</html>"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("corruption", ["hash", "missing", "unlisted"])
 async def test_manifest_integrity_rejected_atomically(store, bundle_factory, tmp_path, corruption):
     bundle = bundle_factory()

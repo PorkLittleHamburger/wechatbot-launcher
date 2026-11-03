@@ -80,7 +80,9 @@ class Dispatcher:
         elif method == "upgrade":
             return await manager.upgrade(instance_id, p.get("version"))
         elif method == "version_import":
-            return await manager.versions.import_archive(Path(p["path"]))
+            referenced_versions = {r["version"] for r in manager.rows() + manager.archives()}
+            return await manager.versions.import_archive(
+                Path(p["path"]), replace=True, referenced_versions=referenced_versions)
         elif method == "version_download":
             return await manager.versions.download(p.get("version"), lambda message, progress: self.emit({
                 "event": "operation-progress", "data": {"operation": method, "message": message, "progress": progress}}))

@@ -177,7 +177,7 @@ class VersionStore:
                              "architecture": raw["architecture"], "compatible": True})
         return rows
 
-    def _install(self, source: Path, *, archive: bool, expected_version: str | None = None) -> dict:
+    def _install(self, source: Path, *, archive: bool, expected_version: str | None = None, replace: bool = False, referenced_versions: set[str] | None = None) -> dict:
         staging = self.root / ".staging"
         staging.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="version-", dir=staging) as temporary:
@@ -203,14 +203,26 @@ class VersionStore:
             if target.exists():
                 installed = validate_manifest(target)
                 if installed != raw:
-                    raise ConfigError("相同版本号已安装不同内容，请使用不同版本号")
+                    if not replace:
+                        raise ConfigError("相同版本号已安装不同内容，请使用不同版本号")
+                    if referenced_versions and raw["version"] in referenced_versions:
+                        raise ConfigError("该版本仍被实例或归档引用，不能替换")
+                    previous = Path(temporary) / "previous"
+                    target.rename(previous)
+                    try:
+                        stage.rename(target)
+                    except BaseException:
+                        previous.rename(target)
+                        raise
             else:
                 stage.rename(target)
             return {"version": raw["version"], "path": str(target), "compatible": True}
 
-    async def import_archive(self, path: Path) -> dict:
+    async def import_archive(self, path: Path, *, replace: bool = False,
+                            referenced_versions: set[str] | None = None) -> dict:
         async with self.lock:
-            return await self._thread(self._install, Path(path), archive=True)
+            return await self._thread(self._install, Path(path), archive=True,
+                                        replace=replace, referenced_versions=referenced_versions)
 
     async def import_directory(self, path: Path) -> dict:
         async with self.lock:

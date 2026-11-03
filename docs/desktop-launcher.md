@@ -31,7 +31,7 @@ WeChat OneBot Launcher 面向 Windows 11 x64，提供多实例管理、版本下
 
 版本管理读取启动器仓库 GitHub Releases 中的兼容运行时包，通过发布页 Atom 源读取列表，不依赖受限的 GitHub REST API。支持手动刷新、下载与本地 ZIP 导入；没有网络时可使用安装包内置版本。
 
-新兼容包包含 `VERSION_MANIFEST.json`，声明格式版本、启动器协议版本、程序版本、Windows x64 架构及文件 SHA-256 清单。导入旧版 `wechat-onebot-<版本>-windows-x64.zip` 便携包时，启动器会自动补入当前 launcher 模块并生成兼容清单。导入前会完整验证文件；同版本号但内容不同、文件损坏或路径不安全时拒绝安装。
+新兼容包包含 `VERSION_MANIFEST.json`，声明格式版本、启动器协议版本、程序版本、Windows x64 架构及文件 SHA-256 清单。导入旧版 `wechat-onebot-<版本>-windows-x64.zip` 便携包时，启动器会自动补入当前 launcher 模块并生成兼容清单。导入前会完整验证文件。同版本号内容不同时，仅在未被实例或归档引用的情况下替换；文件损坏、路径不安全或版本仍被引用时拒绝安装。
 
 同版本实例共享程序文件，每个版本包含自己的 Python、依赖与 helper。下载新版本不会修改已有实例，也不会自动更新桌面应用。被实例或归档引用的版本不可卸载。
 
