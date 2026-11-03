@@ -128,11 +128,13 @@ async def test_checksum_manifest_must_name_exact_installer(updates):
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows installer handoff')
-@pytest.mark.parametrize('case', ['success', 'checksum', 'installer_failure'])
-def test_installer_handoff_without_running_installer(tmp_path, case):
+@pytest.mark.parametrize('case', ['success', 'reboot_required', 'checksum', 'installer_failure', 'uac_denied', 'exit_timeout'])
+@pytest.mark.parametrize('shell_kind', ['preferred', 'windows_powershell'])
+def test_installer_handoff_without_running_installer(tmp_path, case, shell_kind):
     installer = tmp_path / 'installer with spaces.exe'
     installer.write_bytes(b'offline fixture, never executed')
-    launcher = tmp_path / 'launcher.exe'
+    launcher = tmp_path / 'existing install with spaces' / 'launcher.exe'
+    launcher.parent.mkdir()
     launcher.write_bytes(b'offline fixture, never executed')
     env = os.environ.copy()
     env.pop('PSModulePath', None)
@@ -141,31 +143,53 @@ def test_installer_handoff_without_running_installer(tmp_path, case):
         'TEST_INSTALLER': str(installer), 'TEST_LAUNCHER': str(launcher),
         'TEST_CALLS': str(tmp_path / 'calls.jsonl'),
         'TEST_HASH': '0' * 64 if case == 'checksum' else hashlib.sha256(installer.read_bytes()).hexdigest(),
-        'TEST_EXIT': '1' if case == 'installer_failure' else '0',
+        'TEST_EXIT': '1' if case == 'installer_failure' else ('3010' if case == 'reboot_required' else '0'),
+        'TEST_CASE': case,
     })
     # Stub the OS launch boundary; no installer, UAC, launcher, or live instance runs.
     script = r'''
 function global:Start-Process {
     param($FilePath, $Verb, [switch]$Wait, [switch]$PassThru, $WindowStyle, $ArgumentList)
-    @{path=$FilePath;verb=$Verb;args=$ArgumentList} | ConvertTo-Json -Compress | Add-Content -LiteralPath $env:TEST_CALLS
+    @{path=$FilePath;verb=$Verb;args=$ArgumentList} | ConvertTo-Json -Compress | Add-Content -LiteralPath $env:TEST_CALLS -Encoding UTF8
+    if ($env:TEST_CASE -eq 'uac_denied' -and $FilePath -eq $env:TEST_INSTALLER) { throw 'UAC denied' }
     [pscustomobject]@{ExitCode=[int]$env:TEST_EXIT}
+}
+function global:Get-Process {
+    param($Id, $ErrorAction)
+    if ($env:TEST_CASE -eq 'exit_timeout') {
+        $value = [pscustomobject]@{}
+        $value | Add-Member ScriptMethod WaitForExit { param($timeout) return $false }
+        return $value
+    }
 }
 & $env:TEST_HELPER -LauncherPid 2147483647 -Installer $env:TEST_INSTALLER -Sha256 $env:TEST_HASH -LauncherExe $env:TEST_LAUNCHER -RestartArguments '--workspace "D:\offline workspace"'
 '''
     preferred = Path('D:/Tool/PowerShell-7.6.6-win-x64/pwsh.exe')
-    shell = str(preferred) if preferred.is_file() else (shutil.which('pwsh') or 'powershell.exe')
+    shell = (str(Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+             if shell_kind == 'windows_powershell' else
+             (str(preferred) if preferred.is_file() else (shutil.which('pwsh') or 'powershell.exe')))
     result = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-Command', script], env=env,
                             capture_output=True, timeout=30)
-    calls = [json.loads(line) for line in (tmp_path / 'calls.jsonl').read_text(encoding='utf-8-sig').splitlines()]
-    if case == 'success':
+    path = tmp_path / 'calls.jsonl'
+    calls = [json.loads(line) for line in path.read_text(encoding='utf-8-sig').splitlines()] if path.exists() else []
+    if case == 'exit_timeout':
+        assert result.returncode == 1
+        assert calls == []
+        return
+    if case in ('success', 'reboot_required'):
         assert result.returncode == 0, result.stderr
-        assert calls == [{'path': str(installer), 'verb': 'RunAs', 'args': None}]
+        assert len(calls) == 2
     else:
         assert result.returncode == 1
         assert calls[-1]['path'] == str(launcher)
         assert calls[-1]['args'] == r'--workspace "D:\offline workspace"'
         if case == 'checksum':
             assert len(calls) == 1
+    if case != 'checksum':
+        assert calls[0] == {'path': str(installer), 'verb': 'RunAs',
+                            'args': f'/S /UPDATE /D={launcher.parent}'}
+    assert calls[-1]['path'] == str(launcher)
+    assert calls[-1]['args'] == r'--workspace "D:\offline workspace"'
 
 
 @pytest.mark.asyncio

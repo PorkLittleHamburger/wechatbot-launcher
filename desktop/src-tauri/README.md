@@ -125,6 +125,12 @@ force-kill macro with an exact-file Restart Manager check and manual
 Retry/Cancel prompt. Silent installs abort if the launcher is running. Hooks do
 not call force-shutdown or kill an existing process.
 
+From 0.8.5, the update helper waits for exit, verifies SHA-256, and runs NSIS
+with `/S /UPDATE /D=<current install directory>` (the unquoted `/D` is last).
+It restarts the same executable with the original workspace after success or
+recoverable failure. Exit timeout leaves the existing process alone. The helper
+uses .NET hashing and supports the system Windows PowerShell without extra modules.
+
 Uninstall disables/removes only tasks marked with this application's Source and
 whose action points at this installation. In-place upgrades preserve those tasks.
 It preserves data by default, including
