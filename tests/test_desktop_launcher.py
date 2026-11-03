@@ -43,9 +43,11 @@ async def test_release_catalog_uses_atom_feed_without_api_rate_limit(store, monk
     <feed xmlns="http://www.w3.org/2005/Atom">
       <entry>
         <updated>2026-11-03T02:19:46Z</updated>
-        <link rel="alternate" href="https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/tag/v0.8.0"/>
-        <title>WeChat OneBot Launcher 0.8.0</title>
+        <link rel="alternate" href="https://github.com/PorkLittleHamburger/wechatbot/releases/tag/v0.8.5"/>
+        <title>WeChat OneBot 0.8.5</title>
       </entry>
+      <entry><link href="https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/tag/v9.0.0"/></entry>
+      <entry><link href="https://example.com/releases/tag/v9.0.0"/></entry>
     </feed>"""
 
     def catalog(request):
@@ -53,7 +55,7 @@ async def test_release_catalog_uses_atom_feed_without_api_rate_limit(store, monk
         if request.url.path.endswith("/releases.atom"):
             return httpx.Response(200, text=atom)
         if request.method == "HEAD" and request.url.path.endswith(
-                "/wechat-onebot-runtime-0.8.0-windows-x64.zip"):
+                "/wechat-onebot-0.8.5-windows-x64.zip"):
             return httpx.Response(200, headers={"Content-Length": "12345"})
         return httpx.Response(404)
 
@@ -63,18 +65,19 @@ async def test_release_catalog_uses_atom_feed_without_api_rate_limit(store, monk
 
     monkeypatch.setattr(httpx, "AsyncClient", client)
     assert await store.releases() == {"releases": [{
-        "version": "0.8.0",
-        "name": "WeChat OneBot Launcher 0.8.0",
+        "version": "0.8.5",
+        "name": "WeChat OneBot 0.8.5",
         "published_at": "2026-11-03T02:19:46Z",
         "compatible": True,
         "reason": "",
-        "download_url": "https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/download/v0.8.0/wechat-onebot-runtime-0.8.0-windows-x64.zip",
+        "download_url": "https://github.com/PorkLittleHamburger/wechatbot/releases/download/v0.8.5/wechat-onebot-0.8.5-windows-x64.zip",
         "size": 12345,
         "digest": None,
     }]}
     assert requests[0][0] == "GET"
-    assert requests[0][1].endswith("/wechatbot-launcher/releases.atom")
+    assert requests[0][1].endswith("/wechatbot/releases.atom")
     assert all("api.github.com" not in url for _, url in requests)
+    assert all('/PorkLittleHamburger/wechatbot/' in url for _, url in requests)
 
 
 @pytest.fixture

@@ -52,3 +52,5 @@ React 前端通过 Tauri 命令调用 Rust 桌面壳。Rust 管理 Python 服务
 旧版用户先通过托盘退出，再覆盖安装 0.8.4 并保留数据目录；也可通过“设置 → 启动器更新”下载校验后手动触发安装。如需 Bot 修复，请单独下载或导入 0.8.4 运行包，停止实例后选择升级。不要手动覆盖旧版本目录；更新启动器不会自动切换实例版本或改写旧版本 ACL。
 
 更多资料：[桌面使用](docs/desktop-launcher.md)、[构建说明](docs/building.md)、[桌面壳与 IPC](desktop/src-tauri/README.md)、[验收指南](docs/desktop-verification.md)。
+
+当前源码的版本管理直接读取 [Bot 发布页](https://github.com/PorkLittleHamburger/wechatbot/releases)，启动器本体更新仍读取 Launcher 发布页。已发布的启动器 0.8.4 及更早版本无法自动发现仅在 Bot 仓库发布的新版本；可下载 `wechat-onebot-<版本>-windows-x64.zip` 后手动导入，再停止实例并升级。此发布源修复尚需后续启动器版本发布才会进入现有安装。

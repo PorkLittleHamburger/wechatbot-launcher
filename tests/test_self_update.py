@@ -52,6 +52,8 @@ async def test_self_update_catalog_uses_stable_installer_and_plain_notes(updates
     assert result['release']['version'] == '0.9.0'
     assert result['release']['notes'] == 'Release notes'
     assert not any('api.github.com' in url or 'runtime-' in url or 'evil.example' in url for url in calls)
+    assert calls
+    assert all('/PorkLittleHamburger/wechatbot-launcher/' in url for url in calls)
 
 
 @pytest.mark.asyncio

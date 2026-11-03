@@ -23,8 +23,8 @@ MANIFEST = "VERSION_MANIFEST.json"
 VERSION_RE = re.compile(r"\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?")
 PACKAGE_SCHEMA = 1
 LAUNCHER_API = 1
-RELEASE_REPO = "PorkLittleHamburger/wechatbot-launcher"
-RELEASES_ATOM = f"https://github.com/{RELEASE_REPO}/releases.atom"
+BOT_RELEASE_REPO = "PorkLittleHamburger/wechatbot"
+BOT_RELEASES_ATOM = f"https://github.com/{BOT_RELEASE_REPO}/releases.atom"
 LAUNCHER_PACKAGE = Path(__file__).resolve().parent
 
 
@@ -34,11 +34,11 @@ def digest(path: Path) -> str:
 
 
 def runtime_asset_name(version: str) -> str:
-    return f"wechat-onebot-runtime-{version}-windows-x64.zip"
+    return f"wechat-onebot-{version}-windows-x64.zip"
 
 
 def runtime_asset_url(tag: str, version: str) -> str:
-    return f"https://github.com/{RELEASE_REPO}/releases/download/{tag}/{runtime_asset_name(version)}"
+    return f"https://github.com/{BOT_RELEASE_REPO}/releases/download/{tag}/{runtime_asset_name(version)}"
 
 
 def prepare_legacy_runtime(directory: Path) -> None:
@@ -268,7 +268,7 @@ class VersionStore:
     async def releases(self) -> dict:
         try:
             async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-                response = await client.get(RELEASES_ATOM, headers={"Accept": "application/atom+xml"})
+                response = await client.get(BOT_RELEASES_ATOM, headers={"Accept": "application/atom+xml"})
                 response.raise_for_status()
                 try:
                     feed = ET.fromstring(response.text)
@@ -279,7 +279,9 @@ class VersionStore:
                 for entry in feed.findall(f"{namespace}entry"):
                     link = entry.find(f"{namespace}link")
                     href = link.get("href", "") if link is not None else ""
-                    match = re.search(r"/releases/tag/([^/?#]+)$", href)
+                    match = re.fullmatch(
+                        rf"https://github.com/{re.escape(BOT_RELEASE_REPO)}/releases/tag/([^/?#]+)", href,
+                    )
                     if match is None:
                         continue
                     tag = match.group(1)

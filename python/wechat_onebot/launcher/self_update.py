@@ -14,7 +14,10 @@ import httpx
 
 from ..config import ConfigError
 from . import __version__
-from .versions import RELEASE_REPO, RELEASES_ATOM, digest
+from .versions import digest
+
+RELEASE_REPO = "PorkLittleHamburger/wechatbot-launcher"
+RELEASES_ATOM = f"https://github.com/{RELEASE_REPO}/releases.atom"
 
 MAX_INSTALLER = 1024 ** 3
 CHECK_TIMEOUT = 60
