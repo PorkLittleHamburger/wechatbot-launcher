@@ -51,13 +51,8 @@ def relative_storage_path(path: Path, parent: Path) -> str:
     relative = identity_path(path).relative_to(identity_path(parent))
     # Portable backups can be restored under an ordinary DOS workspace. Names
     # requiring verbatim semantics cannot safely be persisted as relative paths.
-    if os.name == 'nt' and any(
-        part.endswith(('.', ' ')) or re.match(
-            r'^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)',
-            part, re.IGNORECASE,
-        ) for part in relative.parts
-    ):
-        raise ValueError('存储路径含有依赖 Windows 扩展路径的特殊名称，无法安全备份或归档')
+    if os.name == 'nt':
+        require_portable_relative(relative)
     candidate = parent / str(relative)
     if identity_path(candidate) != identity_path(path):
         raise ValueError('存储路径无法等价转换为相对路径')
@@ -69,3 +64,14 @@ def relative_storage_path(path: Path, parent: Path) -> str:
         if not same:
             raise ValueError('相对存储路径指向了不同的文件或目录')
     return str(relative)
+
+
+def require_portable_relative(path: PurePath) -> None:
+    """Reject raw archive spellings before any Win32 lookup can alias them."""
+    if any(
+        part.endswith(('.', ' ')) or re.match(
+            r'^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)',
+            part, re.IGNORECASE,
+        ) for part in path.parts
+    ):
+        raise ValueError('路径含有依赖 Windows 扩展语义的特殊名称，无法安全备份、归档或恢复')

@@ -19,7 +19,7 @@ import httpx
 
 from ..config import ConfigError, _atomic_write_json, default_config
 from .locking import DirectoryLease
-from .paths import identity_path, is_within, process_path, relative_storage_path
+from .paths import identity_path, is_within, process_path, relative_storage_path, require_portable_relative
 
 
 @dataclass
@@ -288,6 +288,7 @@ class LauncherManager:
         try:
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 for path in directory.rglob("*"):
+                    require_portable_relative(path.relative_to(directory))
                     if path.is_file() and path != directory / "launcher.lock":
                         if not is_within(path, directory):
                             raise ConfigError("备份包含实例目录外的链接")
@@ -317,6 +318,8 @@ class LauncherManager:
             self.metadata(instance_id)
             self.require_stopped(instance_id)
             directory = self.directory(instance_id)
+            for item in directory.rglob('*'):
+                require_portable_relative(item.relative_to(directory))
             config_path = directory / "config.json"
             raw = json.loads(config_path.read_text(encoding="utf-8-sig"))
             changed = False

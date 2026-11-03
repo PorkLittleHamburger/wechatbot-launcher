@@ -20,7 +20,7 @@ from .locking import DirectoryLease
 from .manager import LauncherManager, ProcessSlot
 from .versions import VersionStore, extract_checked
 from .self_update import LauncherUpdater
-from .paths import identity_path, is_within, relative_storage_path
+from .paths import identity_path, is_within, relative_storage_path, require_portable_relative
 
 DEFAULT_SETTINGS = {"close_to_tray": True, "autostart": False,
                     "autostart_hidden": False, "restore_instances": False}
@@ -247,6 +247,7 @@ class DesktopManager(LauncherManager):
             def pack():
                 with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as output:
                     for item in source.rglob("*"):
+                        require_portable_relative(item.relative_to(source))
                         if item.is_file() and item != source / "launcher.lock":
                             if not is_within(item, source):
                                 raise ConfigError("归档包含越界链接")

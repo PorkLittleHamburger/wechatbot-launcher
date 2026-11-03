@@ -90,6 +90,15 @@ def verify_runtime(target: Path) -> None:
          "print(wechat_onebot.__version__)"],
         [python, "-B", "-X", "utf8",
          str(target / "vendor" / "helper" / "native" / "bridge_watchdog.py"), "--help"],
+        [python, "-B", "-X", "utf8", "-c",
+         "import sys; from pathlib import Path; root=Path(sys.argv[1]).resolve(); "
+         "sys.path.insert(0, str(root/'vendor/helper')); "
+         "from wxbot_framework.file_metadata import FileStore; "
+         "prefix=chr(92)*2+'?'+chr(92); "
+         "value=str(root/'path-validation-only'); "
+         "store=FileStore(value if value.startswith(prefix) else prefix+value, 'wxid_offline'); "
+         "assert str(store.root).startswith(prefix); print('FileStore extended path check passed')",
+         str(target)],
     ]
     for command in commands:
         result = subprocess.run(

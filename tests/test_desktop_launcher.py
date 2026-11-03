@@ -227,6 +227,8 @@ async def test_manifest_integrity_rejected_atomically(store, bundle_factory, tmp
     "C:/escape.txt", "C:escape.txt", "\\\\server\\share\\escape.txt",
     "src/../../escape.txt", "src/wechat_onebot/launcher/worker.py",
     "SRC/WECHAT_ONEBOT/LAUNCHER/WORKER.PY",
+    "data/name./payload.bin", "data/name /payload.bin", "data/CON.txt",
+    "data/LPT¹.txt", "data/aux/payload.bin",
 ])
 async def test_unsafe_or_duplicate_zip_paths_rejected(store, bundle_factory, tmp_path, entry):
     bundle = bundle_factory()
@@ -976,6 +978,38 @@ async def test_verbatim_special_storage_refuses_ambiguous_backup_and_archive(des
         assert (ordinary / 'different.bin').read_bytes() == b'ordinary directory'
         assert (special / 'persisted.bin').read_bytes() == b'verbatim directory'
     assert list((desktop.root / 'backups').iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows verbatim special names')
+@pytest.mark.parametrize('suffix', ['.', ' '])
+@pytest.mark.asyncio
+async def test_nested_special_names_refuse_backup_archive_and_restore(desktop, suffix):
+    row = await desktop.create('Nested special names', 'mock', free_port(), version='0.8.0')
+    config = seed_instance(desktop, row)
+    ordinary = config.storage.data_dir / 'name'
+    ordinary.mkdir()
+    (ordinary / 'payload.bin').write_bytes(b'ordinary directory')
+    prefix = chr(92)*2 + '?' + chr(92)
+    special = Path(prefix + str(config.storage.data_dir / ('name' + suffix)))
+    special.mkdir()
+    (special / 'payload.bin').write_bytes(b'special directory')
+    directory = desktop.directory(row['id'])
+    before = (directory / 'config.json').read_bytes()
+    for operation in (desktop.backup, desktop.archive):
+        with pytest.raises(ValueError, match='特殊名称'):
+            await operation(row['id'])
+        assert (directory / 'config.json').read_bytes() == before
+        assert (ordinary / 'payload.bin').read_bytes() == b'ordinary directory'
+        assert (special / 'payload.bin').read_bytes() == b'special directory'
+    assert list((desktop.root / 'backups').iterdir()) == []
+    # Also cover old archives created before the preflight guard existed.
+    archived = desktop.root / 'archive' / 'legacy-special-names'
+    archived.parent.mkdir(exist_ok=True)
+    directory.rename(archived)
+    with pytest.raises(ValueError, match='特殊名称'):
+        await desktop.restore_archive(archived.name)
+    assert not directory.exists()
+    assert list((desktop.root / 'instances').iterdir()) == []
 
 
 @pytest.mark.asyncio

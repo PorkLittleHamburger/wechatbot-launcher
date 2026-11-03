@@ -9,8 +9,8 @@ import pytest
 
 
 @pytest.mark.parametrize("cached", [False, True])
-@pytest.mark.parametrize("watchdog_exit", [0, 1])
-def test_runtime_staging_checks_watchdog_before_export(tmp_path, monkeypatch, cached, watchdog_exit):
+@pytest.mark.parametrize("failure", [None, "watchdog", "paths"])
+def test_runtime_staging_checks_watchdog_before_export(tmp_path, monkeypatch, cached, failure):
     scripts = Path(__file__).resolve().parents[1] / "scripts"
     monkeypatch.syspath_prepend(str(scripts))
     staging = importlib.import_module("stage_desktop_runtime")
@@ -58,14 +58,16 @@ def test_runtime_staging_checks_watchdog_before_export(tmp_path, monkeypatch, ca
     def probe(command, **kwargs):
         probes.append(command)
         watchdog = command[-1] == "--help"
+        paths = any('FileStore' in argument for argument in command)
+        failed = (failure == 'watchdog' and watchdog) or (failure == 'paths' and paths)
         return SimpleNamespace(
-            returncode=watchdog_exit if watchdog else 0,
-            stdout="", stderr="ModuleNotFoundError: run_selftest" if watchdog_exit and watchdog else "",
+            returncode=1 if failed else 0,
+            stdout="", stderr="runtime validation failed" if failed else "",
         )
 
     monkeypatch.setattr(staging.subprocess, "run", probe)
-    if watchdog_exit:
-        with pytest.raises(RuntimeError, match="ModuleNotFoundError: run_selftest"):
+    if failure:
+        with pytest.raises(RuntimeError, match="runtime validation failed"):
             staging.main()
         assert not (launcher / "desktop/src-tauri/resources/runtime").exists()
         assert not (launcher / "dist").exists()
@@ -73,7 +75,7 @@ def test_runtime_staging_checks_watchdog_before_export(tmp_path, monkeypatch, ca
         staging.main()
     assert len(calls) == (0 if cached else 1)
     assert any(command[-1] == "--help" and "bridge_watchdog.py" in command[-2] for command in probes)
-    if watchdog_exit:
+    if failure:
         return
     installed = launcher / "desktop/src-tauri/resources/runtime"
     manifest = json.loads((installed / "VERSION_MANIFEST.json").read_text())

@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 import httpx
 
 from ..config import ConfigError
+from .paths import require_portable_relative
 
 MANIFEST = "VERSION_MANIFEST.json"
 VERSION_RE = re.compile(r"\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?")
@@ -87,6 +88,10 @@ def safe_members(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
         name = item.filename
         path = PurePosixPath(name)
         mode = item.external_attr >> 16
+        try:
+            require_portable_relative(path)
+        except ValueError as error:
+            raise ConfigError(f"归档包含 Windows 不安全路径：{error}") from error
         if ("\\" in name or ":" in name or path.is_absolute() or ".." in path.parts
                 or not path.parts or stat.S_ISLNK(mode)):
             raise ConfigError("归档包含无效路径或符号链接")

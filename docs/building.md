@@ -54,9 +54,9 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build_desktop.ps1
 
 脚本依次执行启动器 Python 回归、将启动器模块合并到外部运行时、前端构建、Rust 测试及 Tauri/NSIS 打包。`-SkipTests` 和 `-SkipRuntime` 仅用于对应内容已验证且未变化的增量构建。可用 `-RuntimeSource` 和 `-Python` 显式指定路径。
 
-0.8.3 发布使用 Bot `v0.8.3`（提交 `96ef2dfc2b8918e27f1b554dabd3db6dac00a34f`），CI 固定检出该提交。集成 Bot 修复后必须完整组装运行时。无论新下载还是复用缓存 Python，组装都会执行隔离解释器的依赖导入和 `vendor/helper/native/bridge_watchdog.py --help`；失败时输出退出码及标准错误并阻止产物发布。此检查不启动微信桥接。组装结果用于启动器后台和单独发布的运行时 ZIP，不在首次启动时自动安装到版本库。
+0.8.4 使用 Bot 提交 `9b325e2ebe18419e177629c36e95f7d765cdc488`，CI 固定检出该提交，包含 Python/原生文件与语音路径兼容、临时快照读取权限修复及重建的原生 DLL。集成 Bot 修复后必须完整组装运行时，不能用旧缓存替代新源码；只允许复用锁定版本的 Python 解释器与依赖。
 
-当前待发布开发分支已将 CI 来源固定为 Bot `4209c5bac1c70fe776fa448af6982e3c50cf8480`，包含文件/语音扩展本地路径校验修复。不要用旧运行时缓存替代新源码组装；新版本发布时需重新确定正式版本号与来源。本地隔离集成检查可使用此提交的便携构建，再合并当前 launcher 包，不覆盖已安装或已发布产物。
+无论新下载还是复用缓存 Python，组装都会执行隔离解释器的依赖导入、`vendor/helper/native/bridge_watchdog.py --help` 和 FileStore 扩展本地路径初始化检查；失败时输出退出码及标准错误并阻止产物发布。这些检查不启动微信桥接。组装结果用于启动器后台和单独发布的运行时 ZIP，不在首次启动时自动安装到版本库。
 
 产物输出到仓库根目录 `dist`：
 
