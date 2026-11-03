@@ -33,10 +33,9 @@ class ProcessSlot:
 class LauncherManager:
     """Own child handles; persistent manifests never contain trusted PIDs."""
 
-    def __init__(self, root: Path, project: Path, launcher_port: int = 5088):
+    def __init__(self, root: Path, project: Path):
         self.root = root.resolve()
         self.project = project.resolve()
-        self.launcher_port = launcher_port
         self.instances = self.root / "instances"
         self.instances.mkdir(parents=True, exist_ok=True)
         self.slots: dict[str, ProcessSlot] = {}
@@ -91,8 +90,8 @@ class LauncherManager:
         return result
 
     def validate_port(self, port):
-        if type(port) is not int or not 1024 <= port <= 65535 or port == self.launcher_port:
-            raise ConfigError("端口须为 1024–65535，且不能与启动器相同")
+        if type(port) is not int or not 1024 <= port <= 65535:
+            raise ConfigError("端口须为 1024–65535")
 
     def available(self, port: int, exclude: str = "") -> bool:
         if any(row["port"] == port and row["id"] != exclude for row in self.rows()):
@@ -114,7 +113,7 @@ class LauncherManager:
             if mode not in ("mock", "helper"):
                 raise ConfigError("驱动仅支持 mock 或 helper")
             if port is None:
-                port = next((p for p in range(5100, 65000) if p != self.launcher_port and self.available(p)), None)
+                port = next((p for p in range(5100, 65000) if self.available(p)), None)
             self.validate_port(port)
             if not self.available(port):
                 raise ConfigError("端口已被实例或其他程序占用")

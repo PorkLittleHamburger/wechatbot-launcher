@@ -26,7 +26,7 @@ DEFAULT_SETTINGS = {"close_to_tray": True, "autostart": False,
 
 class DesktopManager(LauncherManager):
     def __init__(self, root: Path, project: Path):
-        super().__init__(root, project, launcher_port=0)
+        super().__init__(root, project)
         self.versions = VersionStore(self.root)
         self.version_lock = asyncio.Lock()
 

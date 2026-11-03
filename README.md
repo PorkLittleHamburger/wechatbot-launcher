@@ -11,11 +11,9 @@ Windows x64 桌面启动器，用于管理个人微信 OneBot v11 网关的多�
 | `desktop/src` | React 页面、样式与桌面 API 调用 |
 | `desktop/src-tauri` | Rust 桌面壳、托盘、系统集成、进程管理和 NSIS 安装器 |
 | `python/wechat_onebot/launcher` | Python 实例、版本、升级、备份恢复与通信实现 |
-| `webui/launcher.html` | 浏览器多实例管理页 |
 | `scripts` | 运行时组装、桌面构建、工具配置与隔离验收脚本 |
-| `tests` | 管理服务、版本、通信、升级恢复及打包测试 |
+| `tests` | 桌面后端、版本、通信、升级恢复及打包测试 |
 | `docs` | 使用、构建、设计和验收说明 |
-| `launcher.cmd` | 浏览器管理入口 |
 
 ## 开发环境
 
@@ -33,7 +31,7 @@ python -m venv .venv
 .venv/Scripts/python.exe -m pytest -q tests
 ```
 
-浏览器管理入口为 `launcher.cmd`。桌面使用者应安装构建生成的 EXE，无需源码环境。版本发布只下载兼容运行时包，本仓库不包含网关源码或原生 DLL。
+浏览器多实例管理入口已移除；实例管理全部由桌面应用提供。桌面使用者应安装构建生成的 EXE，无需源码环境。版本发布只下载兼容运行时包，本仓库不包含网关源码或原生 DLL。
 
 ## 桌面工程
 
@@ -43,4 +41,4 @@ React 前端通过 Tauri 命令调用 Rust 桌面壳。Rust 管理 Python 服务
 
 桌面工作空间默认为 `%LOCALAPPDATA%\WeChatOneBotLauncher`，构建产物位于仓库根目录 `dist`。
 
-更多资料：[桌面使用](docs/desktop-launcher.md)、[构建说明](docs/building.md)、[桌面壳与 IPC](desktop/src-tauri/README.md)、[浏览器管理入口](docs/multi-instance-launcher.md)、[验收指南](docs/desktop-verification.md)。
+更多资料：[桌面使用](docs/desktop-launcher.md)、[构建说明](docs/building.md)、[桌面壳与 IPC](desktop/src-tauri/README.md)、[验收指南](docs/desktop-verification.md)。

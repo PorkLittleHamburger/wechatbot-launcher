@@ -12,26 +12,20 @@ from pathlib import Path
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 from wechat_onebot.config import AppConfig, ConfigError
 from wechat_onebot.launcher import manager as manager_module
-from wechat_onebot.launcher.entry import DirectoryLease
+from wechat_onebot.launcher.locking import DirectoryLease
 from wechat_onebot.launcher.manager import LauncherManager
-from wechat_onebot.launcher.server import create_launcher_app
 
 
 PROJECT = Path(os.environ["WECHAT_RUNTIME_SOURCE"]).resolve()
-BASE_URL = "http://127.0.0.1:5088"
-BOOTSTRAP_TOKEN = "offline-launcher-bootstrap"
-LAUNCHER_COOKIE_NAME = "launcher_session_5088"
-MUTATION_HEADERS = {"X-Launcher-Request": "1"}
 
 
 @pytest.fixture
 def manager(tmp_path):
     # Workers need the actual source tree, while every writable path is temporary.
-    return LauncherManager(tmp_path / "launcher", PROJECT, launcher_port=5088)
+    return LauncherManager(tmp_path / "launcher", PROJECT)
 
 
 @contextmanager
@@ -51,21 +45,6 @@ def free_port():
 
 async def create_mock(manager, name="Offline Mock"):
     return await manager.create(name, "mock", free_port())
-
-
-def bootstrap(client):
-    response = client.get(f"/?token={BOOTSTRAP_TOKEN}", follow_redirects=False)
-    assert response.status_code == 303
-    assert response.headers["location"] == "/"
-    assert client.cookies.get(LAUNCHER_COOKIE_NAME)
-    assert "launcher_session" not in client.cookies
-    return response
-
-
-@pytest.fixture
-def client(manager):
-    with TestClient(create_launcher_app(manager, BOOTSTRAP_TOKEN), base_url=BASE_URL) as client:
-        yield client
 
 
 @pytest.mark.asyncio
@@ -107,67 +86,12 @@ async def test_two_real_mock_workers_are_healthy_and_isolated(manager):
                 assert (await child.get("/_launcher/health", headers={
                     "X-Launcher-Probe": other_slot.probe})).status_code == 404
 
-            assert (await a.post("/api/login", json={"token": configs[1].webui.access_token})).status_code == 401
-            assert (await b.post("/api/login", json={"token": configs[0].webui.access_token})).status_code == 401
-            assert (await a.post("/api/login", json={"token": configs[0].webui.access_token})).status_code == 200
-            assert (await a.post("/api/setup-password", json={"password": "first offline password"})).status_code == 200
-            first_cookie_name = f"wechat_onebot_webui_{first['id']}"
-            second_cookie_name = f"wechat_onebot_webui_{second['id']}"
-            first_cookie = a.cookies.get(first_cookie_name)
-            assert first_cookie
-            assert "wechat_onebot_webui" not in a.cookies
-            assert (await b.get("/api/status", headers={
-                "Cookie": f"{first_cookie_name}={first_cookie}"})).status_code == 401
-            assert (await b.get("/api/status", headers={
-                "Cookie": f"{second_cookie_name}={first_cookie}"})).status_code == 401
-            assert (await b.get("/api/auth-state")).json() == {"setupRequired": True}
-            assert (configs[0].storage.data_dir / "webui-auth.json").is_file()
-            assert not (configs[1].storage.data_dir / "webui-auth.json").exists()
-            assert (await b.post("/api/login", json={"token": configs[1].webui.access_token})).status_code == 200
-            assert (await b.post("/api/setup-password", json={"password": "second offline password"})).status_code == 200
-            assert b.cookies.get(second_cookie_name)
-            assert "wechat_onebot_webui" not in b.cookies
-
-            # Browser cookies share a host across ports: use one real cookie jar.
-            async with httpx.AsyncClient(trust_env=False, timeout=5) as browser:
-                first_url = f"http://127.0.0.1:{first['port']}"
-                second_url = f"http://127.0.0.1:{second['port']}"
-                assert (await browser.post(f"{first_url}/api/login", json={
-                    "password": "first offline password"})).status_code == 200
-                first_session = browser.cookies.get(first_cookie_name)
-                assert first_session
-                assert (await browser.get(f"{first_url}/api/status")).status_code == 200
-                assert (await browser.post(f"{second_url}/api/login", json={
-                    "password": "second offline password"})).status_code == 200
-                assert browser.cookies.get(second_cookie_name)
-                assert browser.cookies.get(first_cookie_name) == first_session
-                assert set(browser.cookies) == {first_cookie_name, second_cookie_name}
-                assert (await browser.get(f"{second_url}/api/status")).status_code == 200
-                revisited = await browser.get(f"{first_url}/api/status")
-                assert revisited.status_code == 200
-                # Both port-independent cookies really travel on the revisit.
-                assert f"{first_cookie_name}=" in revisited.request.headers["cookie"]
-                assert f"{second_cookie_name}=" in revisited.request.headers["cookie"]
-                assert (await browser.post(f"{second_url}/api/logout")).status_code == 200
-                assert second_cookie_name not in browser.cookies
-                assert browser.cookies.get(first_cookie_name) == first_session
-                assert (await browser.get(f"{second_url}/api/status")).status_code == 401
-                assert (await browser.get(f"{first_url}/api/status")).status_code == 200
-            for child in (a, b):
-                status = await child.get("/api/status")
-                assert status.status_code == 200
-                assert status.json()["driver"] == "mock"
-                # Managed workers must never query or change the old single-service task.
-                assert (await child.get("/api/autostart")).status_code == 409
-                for enabled in (True, False):
-                    assert (await child.post("/api/autostart", json={"enabled": enabled})).status_code == 409
             for index, config in enumerate(configs):
                 config.storage.media_dir.mkdir(parents=True, exist_ok=True)
                 (config.storage.media_dir / "isolation.txt").write_text(str(index), encoding="utf-8")
             assert [(c.storage.media_dir / "isolation.txt").read_text(encoding="utf-8")
                     for c in configs] == ["0", "1"]
 
-            # Running instances cannot be snapshotted or moved underneath the worker.
             with pytest.raises(ConfigError, match="停止"):
                 await manager.backup(first["id"])
             with pytest.raises(ConfigError, match="停止"):
@@ -180,7 +104,6 @@ async def test_two_real_mock_workers_are_healthy_and_isolated(manager):
             assert rows[first["id"]]["pid"] is None
             assert rows[second["id"]]["pid"] == processes[1].pid
             assert (await b.get("/healthz")).json()["ok"] is True
-            assert (await b.get("/api/status")).status_code == 200
     finally:
         await manager.close()
     assert all(process.poll() is not None for process in processes)
@@ -307,74 +230,6 @@ async def test_storage_path_escape_rejected_before_spawn(manager, tmp_path, monk
         await manager.start(row["id"])
     assert manager.slots[row["id"]].process is None
     assert not (tmp_path / "outside").exists()
-
-
-def test_token_bootstrap_sets_private_cookie_and_redirects_without_token(client):
-    assert client.get("/api/status").status_code == 401
-    assert client.post("/api/instances", headers=MUTATION_HEADERS,
-                       json={"name": "Unauthenticated", "mode": "mock"}).status_code == 401
-    assert client.get("/api/status", headers={
-        "Authorization": f"Bearer {BOOTSTRAP_TOKEN}"}).status_code == 401
-    assert client.get("/?token=wrong", follow_redirects=False).status_code == 401
-    assert client.get(f"/api/status?token={BOOTSTRAP_TOKEN}").status_code == 401
-    response = bootstrap(client)
-    cookie = response.headers["set-cookie"].lower()
-    assert cookie.startswith(f"{LAUNCHER_COOKIE_NAME}=")
-    assert "httponly" in cookie and "samesite=strict" in cookie and "path=/" in cookie
-    assert BOOTSTRAP_TOKEN not in cookie
-    assert response.headers["cache-control"] == "no-store"
-    assert response.headers["referrer-policy"] == "no-referrer"
-    assert response.headers["x-content-type-options"] == "nosniff"
-    assert response.headers["x-frame-options"] == "DENY"
-    assert client.get("/api/status").status_code == 200
-    client.cookies.clear()
-    assert client.get("/api/status", headers={
-        "Cookie": f"{LAUNCHER_COOKIE_NAME}=forged"}).status_code == 401
-
-
-@pytest.mark.parametrize("host", ["evil.example:5088", "127.0.0.1:9999", "127.0.0.1",
-                                 "127.0.0.1:5088.evil.example"])
-def test_host_rejected_even_with_cookie_or_bootstrap_token(client, host):
-    bootstrap(client)
-    assert client.get("/api/status", headers={"Host": host}).status_code == 403
-    assert client.get(f"/?token={BOOTSTRAP_TOKEN}", headers={"Host": host},
-                      follow_redirects=False).status_code == 403
-
-
-@pytest.mark.parametrize("headers", [{}, {"X-Launcher-Request": "0"},
-    {**MUTATION_HEADERS, "Origin": "http://evil.example"},
-    {**MUTATION_HEADERS, "Origin": "http://127.0.0.1:9999"},
-    {**MUTATION_HEADERS, "Origin": "https://127.0.0.1:5088"},
-    {**MUTATION_HEADERS, "Origin": "null"}])
-def test_mutations_require_csrf_header_and_trusted_origin(client, manager, headers):
-    bootstrap(client)
-    response = client.post("/api/instances", headers=headers, json={"name": "Blocked", "mode": "mock"})
-    assert response.status_code == 403
-    assert manager.rows() == []
-
-
-@pytest.mark.parametrize("origin", [None, "http://127.0.0.1:5088", "http://localhost:5088"])
-def test_trusted_mutation_and_instance_token_bootstrap(client, manager, origin):
-    bootstrap(client)
-    headers = dict(MUTATION_HEADERS)
-    if origin is not None:
-        headers["Origin"] = origin
-    response = client.post("/api/instances", headers=headers,
-                           json={"name": "Offline", "mode": "mock", "port": free_port()})
-    assert response.status_code == 200
-    row = response.json()
-    path = manager.directory(row["id"]) / "config.json"
-    config = AppConfig.load(path)
-    credentials_url = f"/api/instances/{row['id']}/credentials"
-    assert client.get(credentials_url).json() == {"token": config.webui.access_token}
-    assert client.get("/api/status", headers={"Host": "localhost:5088"}).status_code == 200
-    # Once a child has a password, the launcher must stop exposing bootstrap credentials.
-    auth = config.storage.data_dir / "webui-auth.json"
-    auth.parent.mkdir(parents=True)
-    auth.write_text("{}", encoding="utf-8")
-    assert client.get(credentials_url).status_code == 409
-    client.cookies.clear()
-    assert client.get(credentials_url).status_code == 401
 
 
 def test_directory_lease_rejects_duplicate_and_can_be_reacquired(tmp_path):

@@ -1,18 +1,17 @@
 # Repository Guidelines
 
-This repository contains only the WeChat OneBot Launcher. The gateway and native bridge live in the separate `PorkLittleHamburger/wechatbot` repository and are supplied through `WECHAT_RUNTIME_SOURCE`; do not copy gateway source, native DLLs, or gateway tests into this repository.
+This repository contains only the desktop WeChat OneBot Launcher. The gateway and native bridge live in the separate `PorkLittleHamburger/wechatbot` repository and are supplied through `WECHAT_RUNTIME_SOURCE`; do not copy gateway source, native DLLs, or gateway tests into this repository. Browser-based launcher management is intentionally not part of this project.
 
 ## Project Structure & Module Organization
 
 - `desktop/src/`: React/TypeScript UI, API bindings, types, and styles.
 - `desktop/src-tauri/`: Rust shell, tray/process management, Windows integration, and NSIS installer logic.
 - `python/wechat_onebot/launcher/`: supervisor, multi-instance management, locking, updates, backups, and desktop RPC backend.
-- `webui/launcher.html`: browser-based multi-instance management page.
 - `scripts/`: runtime assembly, desktop build, tool setup, and installer acceptance automation.
-- `tests/`: pytest coverage for lifecycle, packaging, versions, security boundaries, and regressions.
+- `tests/`: pytest coverage for desktop lifecycle, packaging, versions, security boundaries, and regressions.
 - `docs/`: usage, architecture, build, and verification documentation.
 
-Generated paths such as `dist/`, `desktop/dist/`, `desktop/src-tauri/target/`, `desktop/src-tauri/resources/`, `.development/`, and `data/` are not committed.
+Generated paths such as `dist/`, `desktop/dist/`, `desktop/src-tauri/target/`, `desktop/src-tauri/resources/`, and `.development/` are not committed.
 
 ## Build, Test, and Development Commands
 
@@ -22,7 +21,6 @@ Set `WECHAT_RUNTIME_SOURCE` to a checkout of `PorkLittleHamburger/wechatbot` bef
 $env:WECHAT_RUNTIME_SOURCE = 'D:\study\project\wechatbot'
 .venv/Scripts/python.exe -m pytest -q tests
 pwsh -File scripts/build_desktop.ps1
-pwsh -File scripts/run_launcher.ps1
 cd desktop
 npm ci
 npm run build

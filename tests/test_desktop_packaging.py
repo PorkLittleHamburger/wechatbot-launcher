@@ -27,9 +27,6 @@ def test_runtime_staging_injects_launcher_into_external_gateway(tmp_path, monkey
     backend.mkdir(parents=True)
     (backend / "__init__.py").write_text('__version__ = "0.8.0"\n', encoding="utf-8")
     (backend / "worker.py").write_text("# launcher worker fixture\n", encoding="utf-8")
-    panel = launcher / "webui/launcher.html"
-    panel.parent.mkdir(parents=True)
-    panel.write_text("<html>launcher fixture</html>", encoding="utf-8")
     calls = []
 
     def fresh_python(target, runtime_root):
@@ -51,5 +48,4 @@ def test_runtime_staging_injects_launcher_into_external_gateway(tmp_path, monkey
     assert "src/wechat_onebot/__init__.py" in manifest["files"]
     worker = installed / "src/wechat_onebot/launcher/worker.py"
     assert worker.read_text() == "# launcher worker fixture\n"
-    assert (installed / "webui/launcher.html").read_text() == "<html>launcher fixture</html>"
     assert (launcher / "dist/wechat-onebot-runtime-0.8.0-windows-x64.zip").is_file()

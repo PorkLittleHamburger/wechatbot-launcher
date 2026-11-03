@@ -99,8 +99,6 @@ def main():
         for name in ("src", "vendor", "webui", "assets"):
             copy_tree(runtime / name, stage / name)
         copy_tree(ROOT / "python" / "wechat_onebot" / "launcher", stage / "src" / "wechat_onebot" / "launcher")
-        (stage / "webui").mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / "webui" / "launcher.html", stage / "webui" / "launcher.html")
         for name in ("THIRD_PARTY_NOTICES.md", "requirements-runtime.lock"):
             shutil.copy2(runtime / name, stage / name)
         candidates = []

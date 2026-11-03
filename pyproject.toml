@@ -20,8 +20,5 @@ dev = [
   "pytest-asyncio>=0.24,<1",
 ]
 
-[project.scripts]
-wechatbot-launcher = "wechat_onebot.launcher.entry:main"
-
 [tool.setuptools.packages.find]
 where = ["python"]
