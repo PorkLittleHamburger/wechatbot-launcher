@@ -16,6 +16,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: PorkLittleHamburger/wechatbot
+          ref: 9b287bfa701111c249a401a77b5bff2d65d0fdbf # v0.8.2
           path: runtime-source
       - uses: actions/setup-python@v5
         with:

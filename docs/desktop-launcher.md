@@ -52,6 +52,7 @@ WeChat OneBot Launcher 面向 Windows 11 x64，提供多实例管理、版本下
 | 情况 | 处理方法 |
 | --- | --- |
 | Helper 拒绝启动 | 检查微信构建版本、登录状态、管理员权限和实例日志 |
+| 桥接退出清理守护未启动 | 升级实例到 0.8.2；查看错误给出的 `<helper_root>\logs\bridge_watchdog_startup.log`，其中保留导入错误及退出码；守护运行日志为同目录的 `bridge_watchdog.log` |
 | 端口占用 | 停止占用程序，或调整实例 WebUI 与 OneBot 端点端口 |
 | 没有可下载版本 | 使用内置版本，或导入运行时 ZIP；检查网络后重试 |
 | 恢复提示缺少版本 | 先安装备份要求的程序版本，再执行恢复 |

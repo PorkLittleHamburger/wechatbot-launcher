@@ -24,20 +24,22 @@ pwsh -File scripts/build_desktop.ps1
 | 进程通信 | 请求 ID 匹配、进度事件、异常响应、正常退出和进程回收 |
 | 数据目录 | 显示当前目录，支持打开和切换；运行中实例阻止切换，偏好保存后自动重启生效 |
 | 版本列表 | 通过启动器发布页 Atom 源获取版本，不触发 GitHub REST API 限流 |
+| 守护入口 | 新建和缓存 Python 均执行 watchdog `--help`；导入失败阻止导出，并保留检查退出码和标准错误 |
 
 版本测试使用本地构造的不同测试版本即可，无需发布 GitHub Release。自动化测试使用 Mock；桌面界面新建实例固定为 Helper，原生微信桥接单独验证。
 
 ## 本次本地验证
 
-2026-11-03 在 Windows 环境使用外部 `wechatbot` 运行时源完成一次完整构建：
+2026-11-03 使用 Bot `v0.8.2`（`9b287bfa701111c249a401a77b5bff2d65d0fdbf`）验证启动器 0.8.2：
 
 | 检查 | 结果 |
 | --- | --- |
-| Python | 72 项通过；仅有现有 Starlette/httpx 弃用提示 |
+| Python | 75 项通过，含全新/缓存 Python 的 watchdog 检查成功与失败四组回归 |
 | 前端 | TypeScript 检查与 Vite 生产构建通过 |
-| Rust | 4 项通过，包括数据目录偏好和打包 Python 管理服务通信/退出 |
-| 运行时 | 0.8.1，清单记录 1,382 个文件，启动器 worker 已合并 |
-| 安装器 | `WeChat-OneBot-Launcher_0.8.1_x64-setup.exe`，SHA-256 `c6c3946fe281a4b4f345ab6317a4c733bb66a988768797267b30e4a840c8cbce` |
+| Rust | 3 项单元与 4 项集成测试通过（含重复路径测试），覆盖打包管理服务通信/退出 |
+| 运行时 | 0.8.2，清单记录 1,382 个文件，ZIP 完整性与临时工作区导入校验通过，helper 哈希与 Bot 清单一致 |
+| watchdog | 包内隔离 Python 的 `--help` 通过；用自身测试进程验证提前退出码 7 和 stderr 写入日志，模拟状态 258 验证超时诊断；不操作微信 |
+| 安装器 | `WeChat-OneBot-Launcher_0.8.2_x64-setup.exe`，校验值随 `.exe.sha256` 发布 |
 | 浏览器管理 | 入口、页面、HTTP 管理服务及专用测试均已移除 |
 
 以上结果不替代 UAC、任务计划、NSIS 图形流程、托盘、真实安装卸载或真实微信桥接验证。

@@ -78,12 +78,28 @@ def bundle_python(target: Path, runtime: Path) -> None:
          "-r", str(runtime / "requirements-runtime.lock")],
         check=True,
     )
-    subprocess.run(
-        [str(python / "python.exe"), "-B", "-c",
-         "import fastapi, uvicorn, cryptography, PIL, wechat_onebot, wechat_onebot.launcher.worker; "
+
+
+def verify_runtime(target: Path) -> None:
+    """Exercise the assembled interpreter, including cached Python runtimes."""
+    python = str(target / "python" / "python.exe")
+    commands = [
+        [python, "-B", "-X", "utf8", "-c",
+         "import sys, fastapi, uvicorn, cryptography, PIL, wechat_onebot, "
+         "wechat_onebot.launcher.worker; assert sys.flags.isolated; "
          "print(wechat_onebot.__version__)"],
-        cwd=target, check=True,
-    )
+        [python, "-B", "-X", "utf8",
+         str(target / "vendor" / "helper" / "native" / "bridge_watchdog.py"), "--help"],
+    ]
+    for command in commands:
+        result = subprocess.run(
+            command, cwd=target, capture_output=True, text=True, encoding="utf-8", timeout=30,
+        )
+        if result.returncode:
+            raise RuntimeError(
+                f"Staged runtime check failed (exit {result.returncode}): {command!r}\n"
+                f"{result.stdout}\n{result.stderr}"
+            )
 
 
 def main():
@@ -110,6 +126,7 @@ def main():
             copy_tree(cached, stage / "python")
         else:
             bundle_python(stage, runtime)
+        verify_runtime(stage)
         files = {}
         for path in sorted(stage.rglob("*")):
             if path.is_file():

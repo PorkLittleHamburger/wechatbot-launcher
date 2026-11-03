@@ -41,4 +41,10 @@ React 前端通过 Tauri 命令调用 Rust 桌面壳。Rust 管理 Python 服务
 
 桌面工作空间默认为 `%LOCALAPPDATA%\WeChatOneBotLauncher`，构建产物位于仓库根目录 `dist`。
 
+## 0.8.2 更新与升级
+
+本版内置 Bot 0.8.2，修复嵌入式 Python 下微信桥接退出清理守护无法导入 `run_selftest` 的问题。运行时组装会实际执行包内 Python 的 watchdog `--help` 检查，包含使用缓存 Python 的构建。守护启动失败时保留标准错误和退出码，并分别提示提前退出或就绪超时及日志绝对路径。
+
+旧版用户先通过托盘正常退出启动器，再覆盖安装 0.8.2，保留原数据目录。覆盖安装会新增 0.8.2 运行版本，已有实例仍使用原版本；停止实例后，在实例升级操作中选择 0.8.2，启动器会备份并执行升级检查。确认成功后重新启动实例；微信桥接仍需手动启动。不要手动覆盖正在被实例引用的 0.8.1 版本目录。
+
 更多资料：[桌面使用](docs/desktop-launcher.md)、[构建说明](docs/building.md)、[桌面壳与 IPC](desktop/src-tauri/README.md)、[验收指南](docs/desktop-verification.md)。
