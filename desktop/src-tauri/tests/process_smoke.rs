@@ -40,6 +40,17 @@ fn packaged_supervisor_json_lines_and_graceful_exit() {
         }
     }
     assert_eq!(ids, [1, 2].into_iter().collect());
+    // A verified installer is required; probing this boundary never launches one.
+    stdin.write_all(b"{\"id\":4,\"method\":\"launcher_update_prepare_install\",\"params\":{}}\n").unwrap();
+    stdin.flush().unwrap();
+    loop {
+        let line = rx.recv_timeout(Duration::from_secs(15)).unwrap().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        if value["id"] == 4 {
+            assert!(value["error"].as_str().unwrap().contains("请先下载"), "{line}");
+            break;
+        }
+    }
     stdin.write_all(b"{\"id\":3,\"method\":\"shutdown\",\"params\":{}}\n").unwrap();
     stdin.flush().unwrap();
     drop(stdin);

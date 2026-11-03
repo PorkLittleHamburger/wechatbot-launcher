@@ -44,6 +44,8 @@ export default function App() {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
   const [releases, setReleases] = useState<Release[] | null>(null);
+  const [launcherUpdate, setLauncherUpdate] = useState<{ current_version: string; release: {version: string; name: string; notes: string; url: string} | null } | null>(null);
+  const [installerVersion, setInstallerVersion] = useState('');
   const [settingsDraft, setSettingsDraft] = useState<Settings | null>(null);
   const [logId, setLogId] = useState('');
   const [logText, setLogText] = useState('请选择一个实例查看日志。');
@@ -134,6 +136,7 @@ export default function App() {
   const versions = snapshot?.versions ?? [];
   const settings = settingsDraft ?? snapshot?.settings ?? defaultSettings;
   const versionBusy = [...busy].some(k => k.startsWith('version:'));
+  const updateBusy = [...busy].some(k => k.startsWith('launcher:'));
   const anyActive = instances.some(active);
   const modalBusy = !!modal && (modal.kind === 'editor' ? busy.has(modal.instance?.id ?? 'create') : modal.kind === 'upgrade' ? busy.has(modal.instance.id) : modal.kind === 'confirm' ? busy.has(modal.key) : false);
   function closeModal() { if (!modalBusy) { setModal(null); setModalError(''); setTokenVisible(false); } }
@@ -164,6 +167,15 @@ export default function App() {
     if (!Array.isArray(data.releases)) throw new Error('版本列表格式不正确');
     setReleases(data.releases);
   }, () => { void loadReleases(); });
+  const checkLauncherUpdate = (): Promise<boolean> => run('launcher:check', '检查启动器更新', async () => {
+    setInstallerVersion('');
+    setLauncherUpdate(await rpc('launcher_update_check'));
+  }, () => { void checkLauncherUpdate(); });
+  const downloadLauncherUpdate = (next: string): Promise<boolean> => run('launcher:download', '下载并校验启动器', async () => {
+    setInstallerVersion('');
+    await rpc('launcher_update_download', { version: next });
+    setInstallerVersion(next);
+  }, () => { void downloadLauncherUpdate(next); });
   const downloadVersion = (release: Release): Promise<boolean> => run(`version:${release.version}`, `下载 ${release.version}`, () => rpc('version_download', { version: release.version }), () => { void downloadVersion(release); });
   const listVersions = () => run('version:list', '刷新已安装版本', async () => {
     const installed = await rpc<InstalledVersion[]>('versions_list');
@@ -239,6 +251,11 @@ export default function App() {
         {page === '日志' && <section className="panel"><div className="log-toolbar"><label className="log-select">实例<select value={logId} onChange={e => setLogId(e.target.value)}><option value="">请选择实例</option>{instances.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}</select></label><label className="checkbox"><input type="checkbox" checked={logAuto} onChange={e => setLogAuto(e.target.checked)} />自动刷新</label><button disabled={!logId || logLoading} onClick={() => void loadLogs()}>{logLoading ? '读取中…' : '↻ 刷新日志'}</button></div>{logId && !instances.some(i => i.id === logId) && <p className="instance-error">该实例已不在当前列表中，请重新选择。</p>}<pre className="log-output" tabIndex={0} aria-label="实例日志">{logId ? logText : '请选择一个实例查看日志。'}</pre></section>}
 
         {page === '设置' && <>
+          <section className="panel">
+            <div className="section-heading"><div><h2>启动器更新</h2><p className="muted">当前桌面版本 {snapshot?.version ?? desktopVersion}。更新启动器本体，已有实例的网关运行版本保持不变。</p></div><button disabled={!connected || updateBusy} onClick={() => void checkLauncherUpdate()}>{busy.has('launcher:check') ? '检查中…' : '检查更新'}</button></div>
+            {launcherUpdate && !launcherUpdate.release && <p>当前已是最新可用正式版。</p>}
+            {launcherUpdate?.release && <><p><strong>{launcherUpdate.release.name}</strong> · {launcherUpdate.release.version}</p><pre className="log-output" style={{ maxHeight: 260, whiteSpace: 'pre-wrap' }}>{launcherUpdate.release.notes || '此版本未提供更新说明。'}</pre><div className="panel-actions"><button className="primary" disabled={updateBusy} onClick={() => void downloadLauncherUpdate(launcherUpdate.release!.version)}>{busy.has('launcher:download') ? '下载并校验中…' : installerVersion ? '重新下载' : '下载并校验安装器'}</button><button disabled={updateBusy || installerVersion !== launcherUpdate.release.version || anyActive} title={anyActive ? '请先停止所有实例' : '安装前将退出启动器'} onClick={() => confirm('安装启动器更新', '请确认所有实例已停止。启动器将正常退出，然后打开已校验的 Windows 安装器；请覆盖安装到原程序目录并保留数据。安装完成后通过完成页或开始菜单启动新版。', 'launcher:install', () => invoke('install_launcher_update'))}>安装并退出</button></div>{anyActive && <p className="muted">下载可在后台完成；安装前请先停止所有实例。</p>}</>}
+          </section>
           <section className="panel"><div className="section-heading"><div><h2>启动与窗口</h2><p className="muted">保存后应用到桌面启动器。</p></div></div>{([['close_to_tray', '关闭窗口时最小化到托盘', '关闭窗口后继续在后台管理实例。'], ['autostart', '开机启动', '登录 Windows 时自动启动桌面启动器。'], ['autostart_hidden', '开机启动时隐藏窗口', '自动启动时直接驻留托盘。'], ['restore_instances', '恢复上次运行的实例', '启动时恢复此前运行中的工作空间。']] as [keyof Settings, string, string][]).map(([key, title, description]) => <label className="setting-row" key={key}><div><strong>{title}</strong><small>{description}</small></div><input className="switch" type="checkbox" checked={settings[key]} disabled={!snapshot || busy.has('settings') || key === 'autostart_hidden' && !settings.autostart} onChange={e => setSettingsDraft({ ...settings, [key]: e.target.checked })} /></label>)}<div className="panel-actions"><button disabled={!settingsDraft || busy.has('settings')} onClick={() => setSettingsDraft(null)}>撤销修改</button><button className="primary" disabled={!snapshot || !settingsDraft || busy.has('settings')} onClick={() => void run('settings', '保存设置', async () => { const saved = await rpc<Settings>('settings_set', { ...settings }); setSnapshot(old => old ? { ...old, settings: saved } : old); setSettingsDraft(null); })}>保存设置</button></div></section>
           <section className="panel">
             <div className="section-heading"><div><h2>数据目录</h2><p className="muted">实例、版本、组件和备份等所有数据都存储在此目录中。</p></div></div>

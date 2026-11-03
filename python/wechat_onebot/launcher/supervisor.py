@@ -32,6 +32,14 @@ class Dispatcher:
             return manager.versions.list()
         if method == "releases":
             return await manager.versions.releases()
+        if method == "launcher_update_check":
+            return await manager.updater.check()
+        if method == "launcher_update_download":
+            return await manager.updater.download(params.get("version"), lambda message, progress: self.emit({
+                "event": "operation-progress", "data": {
+                    "operation": method, "message": message, "progress": progress}}))
+        if method == "launcher_update_prepare_install":
+            return await manager.updater.prepare_install()
         if method == "logs":
             return {"text": manager.logs(instance_id)}
         if method == "instance_info":

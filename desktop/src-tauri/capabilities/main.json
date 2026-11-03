@@ -10,6 +10,7 @@
     "allow-reveal-workspace",
     "allow-change-workspace",
     "allow-exit-app",
+    "allow-install-launcher-update",
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "dialog:allow-open"

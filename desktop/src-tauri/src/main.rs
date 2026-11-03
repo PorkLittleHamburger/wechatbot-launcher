@@ -7,17 +7,20 @@ mod ipc;
 mod paths;
 mod scheduler;
 mod windows;
+mod updater;
 
 use serde_json::{json, Value};
 use std::{path::PathBuf, sync::{Arc, atomic::{AtomicBool, Ordering}}};
 use tauri::{Manager, Emitter, WebviewWindow, WebviewUrl};
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 struct Shell {
     ipc: Arc<ipc::Ipc>,
     root: PathBuf,
     settings: Mutex<()>,
+    update_gate: RwLock<()>,
     exiting: AtomicBool,
     exit_complete: AtomicBool,
 }
@@ -50,6 +53,7 @@ fn show_main(app: &tauri::AppHandle) {
 #[tauri::command]
 async fn rpc(window: WebviewWindow, state: tauri::State<'_, Shell>, method: String, params: Value) -> Result<Value, String> {
     require_main(&window)?;
+    let _update_gate = state.update_gate.read().await;
     if state.exiting.load(Ordering::Acquire) { return Err("Launcher is shutting down".into()); }
     if method == "shutdown" { return Err("Use exit_app for desktop shutdown".into()); }
     if !params.is_object() { return Err("RPC params must be an object".into()); }
@@ -104,6 +108,7 @@ async fn reveal_workspace(window: WebviewWindow, app: tauri::AppHandle, state: t
 #[tauri::command]
 async fn change_workspace(window: WebviewWindow, app: tauri::AppHandle, state: tauri::State<'_, Shell>, path: String) -> Result<(), String> {
     require_main(&window)?;
+    let _update_gate = state.update_gate.read().await;
     if state.exiting.load(Ordering::Acquire) { return Err("Launcher is shutting down".into()); }
     let requested = PathBuf::from(path);
     if !requested.is_absolute() { return Err("Workspace path must be absolute".into()); }
@@ -138,6 +143,27 @@ fn begin_exit(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
+async fn install_launcher_update(window: WebviewWindow, app: tauri::AppHandle, state: tauri::State<'_, Shell>) -> Result<(), String> {
+    require_main(&window)?;
+    let _update_gate = state.update_gate.write().await;
+    let _transaction = state.settings.lock().await;
+    if state.exiting.load(Ordering::Acquire) { return Err("Launcher is shutting down".into()); }
+    let snapshot = state.ipc.request("snapshot", json!({})).await?;
+    let rows = snapshot.get("instances").and_then(Value::as_array).ok_or("Invalid instance snapshot")?;
+    if rows.iter().any(|row| !matches!(row.get("state").and_then(Value::as_str), Some("stopped" | "created" | "error" | "failed"))) {
+        return Err("请先停止所有实例，再安装启动器更新".into());
+    }
+    let ready = state.ipc.request("launcher_update_prepare_install", json!({})).await?;
+    let path = PathBuf::from(ready.get("path").and_then(Value::as_str).ok_or("Installer path missing")?);
+    let checksum = ready.get("sha256").and_then(Value::as_str).ok_or("Installer checksum missing")?;
+    let directory = state.root.join("launcher-updates").canonicalize().map_err(|e| e.to_string())?;
+    if !path.canonicalize().map_err(|e| e.to_string())?.starts_with(&directory) { return Err("Installer is outside update cache".into()); }
+    updater::handoff(&path, checksum, &state.root)?;
+    begin_exit(app);
+    Ok(())
+}
+
+#[tauri::command]
 async fn exit_app(window: WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
     require_main(&window)?;
     begin_exit(app);
@@ -153,12 +179,12 @@ fn main() {
             .with_filter(|label| label == "main").build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![rpc, open_instance, reveal_workspace, change_workspace, exit_app])
+        .invoke_handler(tauri::generate_handler![rpc, open_instance, reveal_workspace, change_workspace, exit_app, install_launcher_update])
         .setup(move |app| {
             let project = app.path().resource_dir()?.join("runtime");
             let ipc = ipc::Ipc::spawn(app.handle().clone(), &project, &options.root).map_err(std::io::Error::other)?;
             let hidden = options.autostart && setting(&options.root, "autostart_hidden", false);
-            app.manage(Shell { ipc: ipc.clone(), root: options.root, settings: Mutex::new(()), exiting: AtomicBool::new(false), exit_complete: AtomicBool::new(false) });
+            app.manage(Shell { ipc: ipc.clone(), root: options.root, settings: Mutex::new(()), update_gate: RwLock::new(()), exiting: AtomicBool::new(false), exit_complete: AtomicBool::new(false) });
             let show = tauri::menu::MenuItem::with_id(app, "show", "显示启动器", true, None::<&str>)?;
             let exit = tauri::menu::MenuItem::with_id(app, "exit", "退出", true, None::<&str>)?;
             let menu = tauri::menu::Menu::with_items(app, &[&show, &exit])?;

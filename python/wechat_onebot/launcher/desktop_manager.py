@@ -19,6 +19,7 @@ from ..config import AppConfig, ConfigError, _atomic_write_json
 from .locking import DirectoryLease
 from .manager import LauncherManager, ProcessSlot
 from .versions import MANIFEST, VersionStore, extract_checked, validate_manifest
+from .self_update import LauncherUpdater
 
 DEFAULT_SETTINGS = {"close_to_tray": True, "autostart": False,
                     "autostart_hidden": False, "restore_instances": False}
@@ -28,6 +29,7 @@ class DesktopManager(LauncherManager):
     def __init__(self, root: Path, project: Path):
         super().__init__(root, project)
         self.versions = VersionStore(self.root)
+        self.updater = LauncherUpdater(self.root)
         self.version_lock = asyncio.Lock()
 
     def settings(self) -> dict:
