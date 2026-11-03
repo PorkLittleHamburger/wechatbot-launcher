@@ -8,11 +8,12 @@ mod windows;
 use std::{io::{BufRead, BufReader, Write}, path::PathBuf, sync::mpsc, time::{Duration, Instant}};
 
 #[test]
-#[ignore = "opt-in packaged runtime smoke; copies the initial version into an isolated build workspace"]
+#[ignore = "opt-in packaged runtime smoke in an empty isolated workspace"]
 fn packaged_supervisor_json_lines_and_graceful_exit() {
     let runtime = PathBuf::from(std::env::var_os("WECHAT_SHELL_SMOKE_RUNTIME").expect("Set WECHAT_SHELL_SMOKE_RUNTIME")).canonicalize().unwrap();
     let build = PathBuf::from(std::env::var_os("CARGO_TARGET_DIR").expect("Set CARGO_TARGET_DIR"));
-    let root = build.join(format!("shell-job-smoke-{}", std::process::id()));
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let root = build.join(format!("shell-job-smoke-{}-{nonce}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let (process, mut stdin, stdout) = windows::Process::spawn(&runtime.join("python/python.exe"), &runtime, &root).unwrap();
     let (tx, rx) = mpsc::channel();
@@ -36,6 +37,9 @@ fn packaged_supervisor_json_lines_and_graceful_exit() {
         let value: serde_json::Value = serde_json::from_str(&line).unwrap();
         if let Some(id) = value["id"].as_u64() {
             assert!(value.get("result").is_some(), "{line}");
+            if id == 1 {
+                assert_eq!(value["result"]["versions"], serde_json::json!([]), "Fresh workspace must not auto-install a gateway");
+            }
             ids.insert(id);
         }
     }

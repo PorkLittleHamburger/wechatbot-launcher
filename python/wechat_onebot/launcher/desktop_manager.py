@@ -18,7 +18,7 @@ from . import __version__
 from ..config import AppConfig, ConfigError, _atomic_write_json
 from .locking import DirectoryLease
 from .manager import LauncherManager, ProcessSlot
-from .versions import MANIFEST, VersionStore, extract_checked, validate_manifest
+from .versions import VersionStore, extract_checked
 from .self_update import LauncherUpdater
 
 DEFAULT_SETTINGS = {"close_to_tray": True, "autostart": False,
@@ -45,9 +45,6 @@ class DesktopManager(LauncherManager):
         return updated
 
     async def initialize(self):
-        bundled = validate_manifest(self.project, verify=False)["version"]
-        if not (self.versions.directory / bundled / MANIFEST).is_file():
-            await self.versions.import_directory(self.project)
         for row in self.rows():
             journal = self.directory(row["id"]) / "upgrade.json"
             if journal.exists():
@@ -72,7 +69,10 @@ class DesktopManager(LauncherManager):
                     self.slots.setdefault(instance_id, ProcessSlot()).error = str(error)
 
     def default_version(self) -> str:
-        return validate_manifest(self.project, verify=False)["version"]
+        installed = self.versions.list()
+        if not installed:
+            raise ConfigError("请先在版本管理中下载或导入运行版本，再创建实例")
+        return installed[0]["version"]
 
     def _remember_running(self):
         if not self.closing:

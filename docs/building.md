@@ -54,7 +54,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build_desktop.ps1
 
 脚本依次执行启动器 Python 回归、将启动器模块合并到外部运行时、前端构建、Rust 测试及 Tauri/NSIS 打包。`-SkipTests` 和 `-SkipRuntime` 仅用于对应内容已验证且未变化的增量构建。可用 `-RuntimeSource` 和 `-Python` 显式指定路径。
 
-0.8.2 发布使用 Bot `v0.8.2`（提交 `9b287bfa701111c249a401a77b5bff2d65d0fdbf`），CI 固定检出该提交。集成 Bot 修复后必须完整组装运行时。无论新下载还是复用缓存 Python，组装都会执行隔离解释器的依赖导入和 `vendor/helper/native/bridge_watchdog.py --help`；失败时输出退出码及标准错误并阻止产物发布。此检查不启动微信桥接。
+0.8.3 发布使用 Bot `v0.8.3`（提交 `96ef2dfc2b8918e27f1b554dabd3db6dac00a34f`），CI 固定检出该提交。集成 Bot 修复后必须完整组装运行时。无论新下载还是复用缓存 Python，组装都会执行隔离解释器的依赖导入和 `vendor/helper/native/bridge_watchdog.py --help`；失败时输出退出码及标准错误并阻止产物发布。此检查不启动微信桥接。组装结果用于启动器后台和单独发布的运行时 ZIP，不在首次启动时自动安装到版本库。
 
 产物输出到仓库根目录 `dist`：
 

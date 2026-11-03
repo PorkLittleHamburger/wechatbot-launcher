@@ -385,6 +385,7 @@ async def desktop(tmp_path, bundle_factory, monkeypatch):
     bundled = bundle_factory("0.8.0", runnable=True)
     manager = DesktopManager(tmp_path / "desktop", bundled)
     await manager.initialize()
+    await manager.versions.import_directory(bundled)
     launch_parameters = manager._launch_parameters
     launches = []
 
@@ -410,7 +411,7 @@ async def add_version(manager, bundle_factory, tmp_path, version="0.9.0"):
 
 
 @pytest.mark.asyncio
-async def test_desktop_initializes_bundled_version_and_reopens_without_duplicate(desktop):
+async def test_desktop_preserves_explicitly_imported_version_on_reopen(desktop):
     versions = desktop.versions.list()
     assert [row["version"] for row in versions] == ["0.8.0"]
     await desktop.initialize()
@@ -419,6 +420,29 @@ async def test_desktop_initializes_bundled_version_and_reopens_without_duplicate
     assert row["version"] == "0.8.0"
     assert desktop.metadata(row["id"])["version"] == "0.8.0"
     assert desktop.rows()[0]["state"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_new_workspace_never_installs_bundled_gateway(tmp_path, bundle_factory):
+    from wechat_onebot.launcher.desktop_manager import DesktopManager
+    manager = DesktopManager(tmp_path / 'empty-workspace', bundle_factory())
+    try:
+        await manager.initialize()
+        await manager.initialize()
+        assert manager.snapshot()['versions'] == []
+        assert list(manager.versions.directory.iterdir()) == []
+        with pytest.raises(ConfigError, match='下载或导入'):
+            await manager.create('No implicit version', 'helper', free_port())
+        assert manager.rows() == []
+        await manager.versions.import_directory(manager.project)
+        row = await manager.create('Explicit import', 'mock', free_port())
+        before = {name: (manager.directory(row['id']) / name).read_bytes()
+                  for name in ('config.json', 'instance.json')}
+        await manager.initialize()
+        assert {name: (manager.directory(row['id']) / name).read_bytes() for name in before} == before
+        assert [v['version'] for v in manager.versions.list()] == ['0.8.0']
+    finally:
+        await manager.close()
 
 
 @pytest.mark.asyncio
@@ -676,6 +700,7 @@ async def metadata_desktop(tmp_path, bundle_factory):
     from wechat_onebot.launcher.desktop_manager import DesktopManager
     manager = DesktopManager(tmp_path / "metadata-desktop", bundle_factory())
     await manager.initialize()
+    await manager.versions.import_directory(manager.project)
     try:
         yield manager
     finally:
@@ -790,6 +815,8 @@ async def supervisor(tmp_path, bundle_factory):
     worker_project = portable or PROJECT
     bundled = bundle_factory()
     root = tmp_path / "supervisor-data"
+    from wechat_onebot.launcher.versions import VersionStore
+    await VersionStore(root).import_directory(bundled)
     # Load current supervisor source with the installed runtime's dependencies.
     # Only launch parameters are substituted: worker lifecycle and IPC stay real.
     script = (

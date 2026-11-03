@@ -28,7 +28,7 @@ already staged runtime, the native build can also be invoked with
 
 Release embeds `windows/app.manifest` with `requireAdministrator`. Debug embeds
 `windows/debug.manifest` with `asInvoker`. Both are GUI-subsystem executables.
-The product is **WeChat OneBot Launcher 0.8.2**; the binary is
+The product is **WeChat OneBot Launcher 0.8.3**; the binary is
 `wechat-onebot-launcher.exe`; the application identifier is
 `com.porklittlehamburger.wechat-onebot-launcher`.
 
