@@ -36,21 +36,45 @@ def write_manifest(directory, version="0.8.0", **overrides):
 
 
 @pytest.mark.asyncio
-async def test_release_catalog_uses_independent_launcher_repository(store, monkeypatch):
+async def test_release_catalog_uses_atom_feed_without_api_rate_limit(store, monkeypatch):
     client_class = httpx.AsyncClient
     requests = []
+    atom = """<?xml version="1.0" encoding="UTF-8"?>
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <updated>2026-11-03T02:19:46Z</updated>
+        <link rel="alternate" href="https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/tag/v0.8.0"/>
+        <title>WeChat OneBot Launcher 0.8.0</title>
+      </entry>
+    </feed>"""
 
     def catalog(request):
-        requests.append(str(request.url))
-        return httpx.Response(200, json=[])
+        requests.append((request.method, str(request.url)))
+        if request.url.path.endswith("/releases.atom"):
+            return httpx.Response(200, text=atom)
+        if request.method == "HEAD" and request.url.path.endswith(
+                "/wechat-onebot-runtime-0.8.0-windows-x64.zip"):
+            return httpx.Response(200, headers={"Content-Length": "12345"})
+        return httpx.Response(404)
 
     def client(*args, **kwargs):
         kwargs["transport"] = httpx.MockTransport(catalog)
         return client_class(*args, **kwargs)
 
     monkeypatch.setattr(httpx, "AsyncClient", client)
-    assert await store.releases() == {"releases": []}
-    assert requests == ["https://api.github.com/repos/PorkLittleHamburger/wechatbot/releases"]
+    assert await store.releases() == {"releases": [{
+        "version": "0.8.0",
+        "name": "WeChat OneBot Launcher 0.8.0",
+        "published_at": "2026-11-03T02:19:46Z",
+        "compatible": True,
+        "reason": "",
+        "download_url": "https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/download/v0.8.0/wechat-onebot-runtime-0.8.0-windows-x64.zip",
+        "size": 12345,
+        "digest": None,
+    }]}
+    assert requests[0][0] == "GET"
+    assert requests[0][1].endswith("/wechatbot-launcher/releases.atom")
+    assert all("api.github.com" not in url for _, url in requests)
 
 
 @pytest.fixture
@@ -235,6 +259,31 @@ async def test_single_wrapped_bundle_imports_and_failed_import_leaves_no_staging
         await store.import_archive(malformed)
     assert tree_bytes(store.resolve("0.8.0")) == before
     assert list((store.root / ".staging").iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_portable_zip_gets_manifest_and_launcher_runtime(store, tmp_path):
+    bundle = tmp_path / "legacy-runtime"
+    for name, content in {
+        "python/python.exe": b"offline placeholder",
+        "src/wechat_onebot/__init__.py": b'__version__ = "0.8.1"\n',
+        "src/wechat_onebot/service.py": b"# gateway fixture\n",
+        "webui/index.html": b"<html>gateway</html>",
+        "vendor/helper/VENDORED_COMMIT.txt": b"fixture\n",
+    }.items():
+        path = bundle / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    archive = zip_bundle(bundle, tmp_path / "legacy.zip", prefix="wechat-onebot-0.8.1-windows-x64/")
+    row = await store.import_archive(archive)
+    assert row["version"] == "0.8.1"
+    installed = store.resolve("0.8.1")
+    manifest = json.loads((installed / "VERSION_MANIFEST.json").read_text(encoding="utf-8"))
+    assert manifest["version"] == "0.8.1"
+    assert manifest["launcher_api"] == 1
+    assert (installed / "src/wechat_onebot/launcher/worker.py").is_file()
+    assert (installed / "webui/index.html").is_file()
+    assert store.list()[0]["compatible"] is True
 
 
 def free_port():

@@ -101,6 +101,31 @@ async fn reveal_workspace(window: WebviewWindow, app: tauri::AppHandle, state: t
     app.opener().open_path(state.root.to_string_lossy().as_ref(), None::<&str>).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn change_workspace(window: WebviewWindow, app: tauri::AppHandle, state: tauri::State<'_, Shell>, path: String) -> Result<(), String> {
+    require_main(&window)?;
+    if state.exiting.load(Ordering::Acquire) { return Err("Launcher is shutting down".into()); }
+    let requested = PathBuf::from(path);
+    if !requested.is_absolute() { return Err("Workspace path must be absolute".into()); }
+    let root = paths::prepare_workspace(requested)?;
+    if root == state.root { return Ok(()); }
+    let snapshot = state.ipc.request("snapshot", json!({})).await?;
+    let active = snapshot.get("instances").and_then(Value::as_array).map(|rows| rows.iter().any(|row| {
+        matches!(row.get("state").and_then(Value::as_str), Some("running" | "starting" | "stopping" | "restarting"))
+    })).unwrap_or(false);
+    if active { return Err("请先停止所有实例，再更改数据目录".into()); }
+    scheduler::configure(false, &state.root).await.map_err(|e| format!("Remove old autostart task: {e}"))?;
+    paths::save_workspace(&root)?;
+    if state.exiting.swap(true, Ordering::AcqRel) { return Err("Launcher is shutting down".into()); }
+    let ipc = state.ipc.clone();
+    tauri::async_runtime::spawn(async move {
+        ipc.shutdown().await;
+        app.state::<Shell>().exit_complete.store(true, Ordering::Release);
+        app.restart();
+    });
+    Ok(())
+}
+
 fn begin_exit(app: tauri::AppHandle) {
     let Some(state) = app.try_state::<Shell>() else { app.exit(1); return; };
     if state.exiting.swap(true, Ordering::AcqRel) { return; }
@@ -128,7 +153,7 @@ fn main() {
             .with_filter(|label| label == "main").build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![rpc, open_instance, reveal_workspace, exit_app])
+        .invoke_handler(tauri::generate_handler![rpc, open_instance, reveal_workspace, change_workspace, exit_app])
         .setup(move |app| {
             let project = app.path().resource_dir()?.join("runtime");
             let ipc = ipc::Ipc::spawn(app.handle().clone(), &project, &options.root).map_err(std::io::Error::other)?;

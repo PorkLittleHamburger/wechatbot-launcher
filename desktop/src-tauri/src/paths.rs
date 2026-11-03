@@ -1,6 +1,39 @@
-use std::{ffi::OsString, path::PathBuf};
+use std::{ffi::OsString, path::{Path, PathBuf}};
 
 pub struct Options { pub root: PathBuf, pub autostart: bool }
+
+fn preference_path() -> Result<PathBuf, String> {
+    let local = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set")?;
+    let directory = PathBuf::from(local).join("WeChatOneBotLauncherShell");
+    std::fs::create_dir_all(&directory).map_err(|e| format!("Create launcher settings directory: {e}"))?;
+    Ok(directory.join("workspace.txt"))
+}
+
+fn read_workspace(path: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let value = text.trim();
+    (!value.is_empty()).then(|| PathBuf::from(value))
+}
+
+fn write_workspace(path: &Path, root: &Path) -> Result<(), String> {
+    let temporary = path.with_extension("tmp");
+    std::fs::write(&temporary, root.to_string_lossy().as_bytes())
+        .map_err(|e| format!("Write workspace preference: {e}"))?;
+    std::fs::rename(&temporary, path).map_err(|e| format!("Replace workspace preference: {e}"))
+}
+
+pub fn saved_workspace() -> Option<PathBuf> {
+    read_workspace(&preference_path().ok()?)
+}
+
+pub fn save_workspace(root: &Path) -> Result<(), String> {
+    write_workspace(&preference_path()?, root)
+}
+
+pub fn prepare_workspace(root: PathBuf) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(&root).map_err(|e| format!("Create workspace: {e}"))?;
+    root.canonicalize().map_err(|e| format!("Resolve workspace: {e}"))
+}
 
 impl Options {
     pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Self, String> {
@@ -15,12 +48,18 @@ impl Options {
                 autostart = true;
             } else { return Err(format!("Unknown argument: {}", arg.to_string_lossy())); }
         }
+        let default_root = || -> Result<PathBuf, String> {
+            let local = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set")?;
+            Ok(PathBuf::from(local).join("WeChatOneBotLauncher"))
+        };
         let root = match root {
             Some(root) => root,
-            None => PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set")?).join("WeChatOneBotLauncher"),
+            None => match saved_workspace() {
+                Some(root) => root,
+                None => default_root()?,
+            },
         };
-        std::fs::create_dir_all(&root).map_err(|e| format!("Create workspace: {e}"))?;
-        let root = root.canonicalize().map_err(|e| format!("Resolve workspace: {e}"))?;
+        let root = prepare_workspace(root)?;
         Ok(Self { root, autostart })
     }
 }
@@ -70,5 +109,18 @@ mod tests {
         use std::path::Path;
         assert_eq!(super::workspace_key(Path::new("C:\\Data")), super::workspace_key(Path::new("c:\\data")));
         assert_ne!(super::workspace_key(Path::new("C:\\Data")), super::workspace_key(Path::new("C:\\QA")));
+    }
+
+    #[test]
+    fn workspace_preference_round_trip() {
+        use std::path::Path;
+        let directory = std::env::temp_dir().join(format!("wechat-launcher-preference-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let file = directory.join("workspace.txt");
+        let root = Path::new("D:\\WeChatData");
+        super::write_workspace(&file, root).unwrap();
+        assert_eq!(super::read_workspace(&file).as_deref(), Some(root));
+        std::fs::remove_file(file).unwrap();
+        std::fs::remove_dir(directory).unwrap();
     }
 }

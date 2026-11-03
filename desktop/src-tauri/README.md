@@ -79,6 +79,7 @@ wildcard window, or remote WebUI receives native permissions.
 invoke('rpc', { method: 'snapshot', params: {} }) // resolves backend result
 invoke('open_instance', { instanceId: '<32 lowercase hex characters>' })
 invoke('reveal_workspace') // fixed workspace; accepts no arbitrary path
+invoke('change_workspace', { path: 'D:\\Data\\WeChatOneBot' }) // absolute path
 invoke('exit_app')
 ```
 
@@ -88,7 +89,7 @@ with the same ID and a `http://127.0.0.1:<port>/...` URL. It opens/focuses
 This is a native-IPC boundary; it does not claim a lower Windows integrity level
 for WebView2 than the main app. A user can copy the URL into a normal browser.
 
-The main capability grants only the four custom commands, event listen/unlisten,
+The main capability grants only the five custom commands, event listen/unlisten,
 and `dialog:allow-open` for the frontend file chooser. Opener and window-state
 plugins are called from Rust without granting their JavaScript APIs.
 
@@ -98,9 +99,14 @@ single-instance plugin applies to the desktop application, including QA workspac
 stop an existing copy before testing a second workspace. Window-state saves only
 main geometry/state, excluding visibility, so it cannot override autostart hiding.
 
-`--workspace PATH` chooses an isolated root (otherwise
-`%LOCALAPPDATA%/WeChatOneBotLauncher`). `--autostart` hides main only when
+`--workspace PATH` chooses an isolated root (otherwise the saved data-directory
+preference or `%LOCALAPPDATA%/WeChatOneBotLauncher`). `--autostart` hides main only when
 `autostart_hidden` is true; its default is false, matching the Python defaults.
+
+`change_workspace` accepts only an absolute path from the main window. It rejects
+the switch while any instance is active, removes the old autostart task, saves
+the preference outside the workspace, shuts down the supervisor, and restarts
+the app. Existing files are not migrated automatically.
 
 ## Settings and installer behavior
 

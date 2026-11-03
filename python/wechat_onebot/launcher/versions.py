@@ -10,6 +10,7 @@ import shutil
 import stat
 import tempfile
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath
 
 import httpx
@@ -18,11 +19,63 @@ from ..config import ConfigError
 
 MANIFEST = "VERSION_MANIFEST.json"
 VERSION_RE = re.compile(r"\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?")
+PACKAGE_SCHEMA = 1
+LAUNCHER_API = 1
+RELEASE_REPO = "PorkLittleHamburger/wechatbot-launcher"
+RELEASES_ATOM = f"https://github.com/{RELEASE_REPO}/releases.atom"
+LAUNCHER_PACKAGE = Path(__file__).resolve().parent
 
 
 def digest(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def runtime_asset_name(version: str) -> str:
+    return f"wechat-onebot-runtime-{version}-windows-x64.zip"
+
+
+def runtime_asset_url(tag: str, version: str) -> str:
+    return f"https://github.com/{RELEASE_REPO}/releases/download/{tag}/{runtime_asset_name(version)}"
+
+
+def prepare_legacy_runtime(directory: Path) -> None:
+    required = {
+        "python/python.exe",
+        "src/wechat_onebot/__init__.py",
+        "webui/index.html",
+    }
+    if any(not (directory / name).is_file() for name in required):
+        raise ConfigError("ZIP 缺少兼容清单，且不是可识别的便携运行时包")
+    init = directory / "src" / "wechat_onebot" / "__init__.py"
+    match = re.search(r"(?m)^__version__\s*=\s*['\"]([^'\"]+)['\"]", init.read_text(encoding="utf-8"))
+    if match is None or not VERSION_RE.fullmatch(match.group(1)):
+        raise ConfigError("ZIP 中无法识别网关版本号")
+    for temporary in directory.rglob("__pycache__"):
+        if temporary.is_dir():
+            shutil.rmtree(temporary)
+    for compiled in directory.rglob("*.pyc"):
+        compiled.unlink(missing_ok=True)
+    launcher = directory / "src" / "wechat_onebot" / "launcher"
+    if launcher.exists():
+        shutil.rmtree(launcher)
+    shutil.copytree(
+        LAUNCHER_PACKAGE,
+        launcher,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    files = {}
+    for path in sorted(directory.rglob("*")):
+        if path.is_file() and path.name != MANIFEST:
+            files[path.relative_to(directory).as_posix()] = digest(path)
+    manifest = {
+        "package_schema": PACKAGE_SCHEMA,
+        "launcher_api": LAUNCHER_API,
+        "version": match.group(1),
+        "architecture": "windows-x64",
+        "files": files,
+    }
+    (directory / MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
 def safe_members(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
@@ -70,7 +123,7 @@ def validate_manifest(directory: Path, *, verify: bool = True) -> dict:
         raw = json.loads((directory / MANIFEST).read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise ConfigError("版本包缺少有效兼容清单，不兼容当前启动器") from error
-    if (raw.get("package_schema") != 1 or raw.get("launcher_api") != 1
+    if (raw.get("package_schema") != PACKAGE_SCHEMA or raw.get("launcher_api") != LAUNCHER_API
             or raw.get("architecture") != "windows-x64"
             or not isinstance(raw.get("version"), str) or not VERSION_RE.fullmatch(raw["version"])):
         raise ConfigError("版本包格式、平台或启动器协议不兼容")
@@ -132,14 +185,17 @@ class VersionStore:
             stage.mkdir()
             if archive:
                 extract_checked(source, stage)
-                if not (stage / MANIFEST).is_file():
-                    children = list(stage.iterdir())
-                    if len(children) != 1 or not children[0].is_dir():
-                        raise ConfigError("版本包缺少兼容清单")
-                    stage = children[0]
             else:
                 shutil.copytree(source, stage, dirs_exist_ok=True,
                                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            if not (stage / MANIFEST).is_file():
+                children = list(stage.iterdir())
+                if (len(children) == 1 and children[0].is_dir()
+                        and ((children[0] / MANIFEST).is_file()
+                             or children[0].name not in {"python", "src", "webui", "vendor", "assets"})):
+                    stage = children[0]
+            if not (stage / MANIFEST).is_file():
+                prepare_legacy_runtime(stage)
             raw = validate_manifest(stage)
             if expected_version is not None and raw["version"] != expected_version:
                 raise ConfigError("下载包版本号与所选版本不一致")
@@ -176,24 +232,52 @@ class VersionStore:
         shutil.rmtree(path)
 
     async def releases(self) -> dict:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            response = await client.get("https://api.github.com/repos/PorkLittleHamburger/wechatbot/releases",
-                                        headers={"Accept": "application/vnd.github+json"})
-            response.raise_for_status()
-            rows = []
-            for release in response.json():
-                if release.get("draft") or release.get("prerelease"):
-                    continue
-                asset = next((a for a in release.get("assets", [])
-                              if re.fullmatch(r"wechat-onebot-runtime-.*-windows-x64\.zip", a["name"])), None)
-                rows.append({"version": release["tag_name"].removeprefix("v"),
-                             "name": release.get("name") or release["tag_name"],
-                             "published_at": release.get("published_at"), "compatible": bool(asset),
-                             "reason": "" if asset else "没有兼容的桌面运行时包",
-                             "download_url": asset["browser_download_url"] if asset else None,
-                             "size": asset["size"] if asset else 0,
-                             "digest": asset.get("digest") if asset else None})
-            return {"releases": rows}
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                response = await client.get(RELEASES_ATOM, headers={"Accept": "application/atom+xml"})
+                response.raise_for_status()
+                try:
+                    feed = ET.fromstring(response.text)
+                except ET.ParseError as error:
+                    raise ConfigError("版本列表响应格式无效") from error
+                namespace = "{http://www.w3.org/2005/Atom}"
+                rows = []
+                for entry in feed.findall(f"{namespace}entry"):
+                    link = entry.find(f"{namespace}link")
+                    href = link.get("href", "") if link is not None else ""
+                    match = re.search(r"/releases/tag/([^/?#]+)$", href)
+                    if match is None:
+                        continue
+                    tag = match.group(1)
+                    if not tag.startswith("v"):
+                        continue
+                    version = tag[1:]
+                    if not VERSION_RE.fullmatch(version):
+                        continue
+                    asset = runtime_asset_url(tag, version)
+                    try:
+                        probe = await client.head(asset)
+                    except httpx.HTTPError:
+                        compatible, size = False, 0
+                    else:
+                        compatible = probe.status_code == 200
+                        try:
+                            size = int(probe.headers.get("Content-Length", "0")) if compatible else 0
+                        except ValueError:
+                            size = 0
+                    rows.append({
+                        "version": version,
+                        "name": entry.findtext(f"{namespace}title") or tag,
+                        "published_at": entry.findtext(f"{namespace}updated"),
+                        "compatible": compatible,
+                        "reason": "" if compatible else "没有兼容的桌面运行时包",
+                        "download_url": asset if compatible else None,
+                        "size": size,
+                        "digest": None,
+                    })
+                return {"releases": rows}
+        except httpx.HTTPError as error:
+            raise ConfigError(f"获取版本列表失败: {error}") from error
 
     async def download(self, version: str, progress) -> dict:
         releases = (await self.releases())["releases"]

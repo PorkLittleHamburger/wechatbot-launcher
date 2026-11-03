@@ -59,7 +59,7 @@ class Dispatcher:
         if method == "settings_set":
             return manager.save_settings(p)
         if method == "create":
-            return await manager.create(p.get("name"), p.get("mode", "mock"), p.get("port"), p.get("version"))
+            return await manager.create(p.get("name"), p.get("mode", "helper"), p.get("port"), p.get("version"))
         if method == "update":
             await manager.update(instance_id, p.get("name"), p.get("port"))
         elif method == "start":

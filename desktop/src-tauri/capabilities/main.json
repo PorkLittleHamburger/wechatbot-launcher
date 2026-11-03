@@ -8,6 +8,7 @@
     "allow-rpc",
     "allow-open-instance",
     "allow-reveal-workspace",
+    "allow-change-workspace",
     "allow-exit-app",
     "core:event:allow-listen",
     "core:event:allow-unlisten",

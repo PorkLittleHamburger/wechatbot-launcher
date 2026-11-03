@@ -8,7 +8,7 @@ fn main() {
     };
     let attributes = tauri_build::Attributes::new()
         .app_manifest(tauri_build::AppManifest::new().commands(&[
-            "rpc", "open_instance", "reveal_workspace", "exit_app",
+            "rpc", "open_instance", "reveal_workspace", "change_workspace", "exit_app",
         ]))
         .windows_attributes(tauri_build::WindowsAttributes::new().app_manifest(manifest));
     tauri_build::try_build(attributes).expect("Tauri build configuration failed");

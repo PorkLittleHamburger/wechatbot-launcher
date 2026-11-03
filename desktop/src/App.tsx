@@ -38,7 +38,6 @@ export default function App() {
   const [modal, setModal] = useState<ModalState | null>(null);
   const [modalError, setModalError] = useState('');
   const [name, setName] = useState('');
-  const [mode, setMode] = useState<'mock' | 'helper'>('mock');
   const [port, setPort] = useState('');
   const [version, setVersion] = useState('');
   const [search, setSearch] = useState('');
@@ -134,9 +133,10 @@ export default function App() {
   const versions = snapshot?.versions ?? [];
   const settings = settingsDraft ?? snapshot?.settings ?? defaultSettings;
   const versionBusy = [...busy].some(k => k.startsWith('version:'));
+  const anyActive = instances.some(active);
   const modalBusy = !!modal && (modal.kind === 'editor' ? busy.has(modal.instance?.id ?? 'create') : modal.kind === 'upgrade' ? busy.has(modal.instance.id) : modal.kind === 'confirm' ? busy.has(modal.key) : false);
   function closeModal() { if (!modalBusy) { setModal(null); setModalError(''); setTokenVisible(false); } }
-  function showEditor(i?: Instance) { setName(i?.name ?? ''); setMode(i?.mode ?? 'mock'); setPort(i ? String(i.port) : ''); setVersion(i?.version ?? versions[0]?.version ?? ''); setModalError(''); setModal({ kind: 'editor', instance: i }); }
+  function showEditor(i?: Instance) { setName(i?.name ?? ''); setPort(i ? String(i.port) : ''); setVersion(i?.version ?? versions[0]?.version ?? ''); setModalError(''); setModal({ kind: 'editor', instance: i }); }
   function confirm(title: string, text: string, key: string, action: () => Promise<unknown>) { setModalError(''); setModal({ kind: 'confirm', title, text, key, action }); }
   const instanceAction = (i: Instance, method: string, label: string) => run(i.id, `${i.name} · ${label}`, () => rpc(method, { id: i.id }));
 
@@ -147,7 +147,7 @@ export default function App() {
     if (!name.trim() || (parsedPort !== null && (!Number.isInteger(parsedPort) || parsedPort < 1024 || parsedPort > 65535)) || (i && parsedPort === null)) { setModalError('请输入名称和有效端口（1024–65535）。'); return; }
     if (!i && !versions.some(v => v.version === version)) { setModalError('请先安装并选择一个版本。'); return; }
     if (i && active(instances.find(row => row.id === i.id) ?? i)) { setModalError('请先停止实例再编辑。'); return; }
-    const ok = await run(i?.id ?? 'create', i ? '保存实例' : '创建实例', () => rpc(i ? 'update' : 'create', i ? { id: i.id, name: name.trim(), port: parsedPort } : { name: name.trim(), mode, port: parsedPort, version }));
+    const ok = await run(i?.id ?? 'create', i ? '保存实例' : '创建实例', () => rpc(i ? 'update' : 'create', i ? { id: i.id, name: name.trim(), port: parsedPort } : { name: name.trim(), mode: 'helper', port: parsedPort, version }));
     if (ok) setModal(null);
   }
   async function credentials(i: Instance) {
@@ -181,6 +181,17 @@ export default function App() {
     });
   }
 
+  async function chooseWorkspace() {
+    if (!snapshot || anyActive) return;
+    try {
+      const path = await open({ title: '选择数据目录', multiple: false, directory: true });
+      if (typeof path !== 'string') return;
+      confirm('更改数据目录', `将切换到“${path}”。启动器会自动重启；当前实例、版本和备份不会自动迁移。`, 'workspace:change', () => invoke('change_workspace', { path }));
+    } catch (e) {
+      report('选择数据目录', e);
+    }
+  }
+
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><span className="logo" aria-hidden="true">◈</span><div><strong>WeChat OneBot</strong><small>DESKTOP WORKSPACE</small></div></div>
@@ -210,7 +221,7 @@ export default function App() {
               <div className="card-footer"><button disabled={locked} onClick={() => { setLogId(i.id); setPage('日志'); }}>日志</button><button disabled={stoppedOnly} title={active(i) ? '请先停止实例' : undefined} onClick={() => showEditor(i)}>编辑</button><button disabled={stoppedOnly} onClick={() => void instanceAction(i, 'backup', '备份')}>备份</button><button disabled={stoppedOnly || !versions.some(v => v.version !== i.version)} onClick={() => { setVersion(versions.find(v => v.version !== i.version)?.version ?? ''); setModalError(''); setModal({ kind: 'upgrade', instance: i }); }}>升级</button><button disabled={locked} onClick={() => void credentials(i)}>首次登录凭据</button><button className="danger" disabled={stoppedOnly} onClick={() => confirm('归档实例', `确定归档“${i.name}”吗？归档后可在“备份恢复”中恢复。`, i.id, () => rpc('archive', { id: i.id }))}>归档</button></div>
             </article>;
           })}</div>
-          {!instances.length && <div className="empty"><span>◇</span><h3>{snapshot ? '从第一个实例开始' : '正在连接工作空间…'}</h3><p>{snapshot ? '安装版本后，创建一个 Mock 实例开始体验。' : '本地服务连接成功后将在此显示实例。'}</p></div>}
+          {!instances.length && <div className="empty"><span>◇</span><h3>{snapshot ? '从第一个实例开始' : '正在连接工作空间…'}</h3><p>{snapshot ? '安装版本后，创建一个 Helper 实例开始体验。' : '本地服务连接成功后将在此显示实例。'}</p></div>}
           {!!instances.length && !instances.some(i => (i.name.toLowerCase().includes(search.toLowerCase()) || String(i.port).includes(search)) && (filter === 'all' || (filter === 'error' ? !!i.error || ['error', 'failed'].includes(i.state) : i.state === filter))) && <div className="empty">没有匹配的实例，请调整搜索条件。</div>}
         </>}
 
@@ -228,14 +239,26 @@ export default function App() {
 
         {page === '设置' && <>
           <section className="panel"><div className="section-heading"><div><h2>启动与窗口</h2><p className="muted">保存后应用到桌面启动器。</p></div></div>{([['close_to_tray', '关闭窗口时最小化到托盘', '关闭窗口后继续在后台管理实例。'], ['autostart', '开机启动', '登录 Windows 时自动启动桌面启动器。'], ['autostart_hidden', '开机启动时隐藏窗口', '自动启动时直接驻留托盘。'], ['restore_instances', '恢复上次运行的实例', '启动时恢复此前运行中的工作空间。']] as [keyof Settings, string, string][]).map(([key, title, description]) => <label className="setting-row" key={key}><div><strong>{title}</strong><small>{description}</small></div><input className="switch" type="checkbox" checked={settings[key]} disabled={!snapshot || busy.has('settings') || key === 'autostart_hidden' && !settings.autostart} onChange={e => setSettingsDraft({ ...settings, [key]: e.target.checked })} /></label>)}<div className="panel-actions"><button disabled={!settingsDraft || busy.has('settings')} onClick={() => setSettingsDraft(null)}>撤销修改</button><button className="primary" disabled={!snapshot || !settingsDraft || busy.has('settings')} onClick={() => void run('settings', '保存设置', async () => { const saved = await rpc<Settings>('settings_set', { ...settings }); setSnapshot(old => old ? { ...old, settings: saved } : old); setSettingsDraft(null); })}>保存设置</button></div></section>
-          <section className="panel"><h2>工作空间</h2><p className="workspace-path mono">{snapshot?.root || '等待本地服务连接…'}</p><div className="actions"><button disabled={busy.has('workspace')} onClick={() => void run('workspace', '打开工作空间', () => invoke('reveal_workspace'))}>在资源管理器中打开</button><button className="danger" onClick={() => confirm('退出启动器', '确定退出桌面启动器吗？', 'exit', () => invoke('exit_app'))}>退出应用</button></div></section>
+          <section className="panel">
+            <div className="section-heading"><div><h2>数据目录</h2><p className="muted">实例、版本、组件和备份等所有数据都存储在此目录中。</p></div></div>
+            <div className="data-directory">
+              <strong>当前数据目录</strong>
+              <div className="path-control">
+                <span className="mono" title={snapshot?.root}>{snapshot?.root || '等待本地服务连接…'}</span>
+                <button disabled={!snapshot || busy.has('workspace')} onClick={() => void run('workspace', '打开数据目录', () => invoke('reveal_workspace'))}>打开</button>
+                <button className="primary" disabled={!snapshot || busy.has('workspace:change') || anyActive} title={anyActive ? '请先停止所有实例' : '选择新的数据目录并重启启动器'} onClick={() => void chooseWorkspace()}>更改</button>
+              </div>
+              <small className="muted">更改后启动器会自动重启；当前数据不会自动迁移。</small>
+            </div>
+            <div className="panel-actions"><button className="danger" onClick={() => confirm('退出启动器', '确定退出桌面启动器吗？', 'exit', () => invoke('exit_app'))}>退出应用</button></div>
+          </section>
         </>}
         <footer><span className="workspace-root" title={snapshot?.root}>{snapshot?.root || '本地桌面工作空间'}</span><span>WeChat OneBot · {snapshot?.version ?? '0.8.0'}</span></footer>
       </div>
     </main>
 
     {modal && <Modal title={modal.kind === 'editor' ? modal.instance ? '编辑实例' : '创建实例' : modal.kind === 'upgrade' ? '升级实例版本' : modal.kind === 'credentials' ? '首次登录凭据' : modal.title} busy={modalBusy} close={closeModal}>
-      {modal.kind === 'editor' && <form onSubmit={e => void saveInstance(e)}><div className="modal-body"><p className="muted">{modal.instance ? '修改实例名称与端口。' : '选择已安装版本，创建一个独立的工作空间。'}</p><label className="field">实例名称<input required maxLength={80} autoFocus value={name} disabled={modalBusy} onChange={e => setName(e.target.value)} placeholder="例如：我的机器人" /></label>{!modal.instance && <><label className="field">运行模式<select value={mode} disabled={modalBusy} onChange={e => setMode(e.target.value as 'mock' | 'helper')}><option value="mock">Mock · 模拟模式</option><option value="helper">Helper · 微信桥接</option></select></label><label className="field">运行版本<select required value={version} disabled={modalBusy} onChange={e => setVersion(e.target.value)}><option value="" disabled>选择已安装版本</option>{versions.map(v => <option key={v.version} value={v.version}>{v.version}</option>)}</select></label></>}<label className="field">WebUI 端口<input type="number" min={1024} max={65535} step={1} required={!!modal.instance} disabled={modalBusy} value={port} onChange={e => setPort(e.target.value)} placeholder="留空，自动分配" /><small>范围 1024–65535{!modal.instance && '，留空自动分配'}。</small></label>{modalError && <p className="instance-error" role="alert">{modalError}</p>}</div><div className="modal-actions"><button type="button" disabled={modalBusy} onClick={closeModal}>取消</button><button className="primary" disabled={modalBusy || !modal.instance && !versions.length}>{modalBusy ? '保存中…' : modal.instance ? '保存修改' : '创建实例'}</button></div></form>}
+      {modal.kind === 'editor' && <form onSubmit={e => void saveInstance(e)}><div className="modal-body"><p className="muted">{modal.instance ? '修改实例名称与端口。' : '选择已安装版本，创建一个 Helper 微信桥接实例。'}</p><label className="field">实例名称<input required maxLength={80} autoFocus value={name} disabled={modalBusy} onChange={e => setName(e.target.value)} placeholder="例如：我的机器人" /></label>{!modal.instance && <><label className="field">运行版本<select required value={version} disabled={modalBusy} onChange={e => setVersion(e.target.value)}><option value="" disabled>选择已安装版本</option>{versions.map(v => <option key={v.version} value={v.version}>{v.version}</option>)}</select></label></>}<label className="field">WebUI 端口<input type="number" min={1024} max={65535} step={1} required={!!modal.instance} disabled={modalBusy} value={port} onChange={e => setPort(e.target.value)} placeholder="留空，自动分配" /><small>范围 1024–65535{!modal.instance && '，留空自动分配'}。</small></label>{modalError && <p className="instance-error" role="alert">{modalError}</p>}</div><div className="modal-actions"><button type="button" disabled={modalBusy} onClick={closeModal}>取消</button><button className="primary" disabled={modalBusy || !modal.instance && !versions.length}>{modalBusy ? '保存中…' : modal.instance ? '保存修改' : '创建实例'}</button></div></form>}
       {modal.kind === 'upgrade' && <form onSubmit={e => { e.preventDefault(); const i = instances.find(i => i.id === modal.instance.id); if (!i || active(i)) { setModalError('请先停止实例再升级。'); return; } if (!version || !versions.some(v => v.version === version)) { setModalError('请选择已安装版本。'); return; } void run(i.id, '升级实例', () => rpc('upgrade', { id: i.id, version })).then(ok => { if (ok) setModal(null); }); }}><div className="modal-body"><p>将“{modal.instance.name}”从 {modal.instance.version} 切换到已安装版本。建议提前备份。</p><label className="field">目标版本<select value={version} onChange={e => setVersion(e.target.value)} disabled={modalBusy} required>{versions.filter(v => v.version !== modal.instance.version).map(v => <option key={v.version} value={v.version}>{v.version}</option>)}</select></label>{modalError && <p className="instance-error" role="alert">{modalError}</p>}</div><div className="modal-actions"><button type="button" disabled={modalBusy} onClick={closeModal}>取消</button><button className="primary" disabled={modalBusy || !version}>确认升级</button></div></form>}
       {modal.kind === 'confirm' && <><div className="modal-body"><p>{modal.text}</p>{modalError && <p className="instance-error" role="alert">{modalError}</p>}</div><div className="modal-actions"><button disabled={modalBusy} onClick={closeModal}>取消</button><button className="primary" disabled={modalBusy} onClick={() => void run(modal.key, modal.title, modal.action).then(ok => { if (ok) setModal(null); })}>{modalBusy ? '处理中…' : '确认'}</button></div></>}
       {modal.kind === 'credentials' && <><div className="modal-body"><p>“{modal.name}”的首次登录令牌。打开实例 WebUI 后在登录页粘贴，请妥善保管。</p><div className="token-row"><input aria-label="实例令牌" type={tokenVisible ? 'text' : 'password'} readOnly value={modal.token} autoComplete="off" /><button aria-pressed={tokenVisible} onClick={() => setTokenVisible(v => !v)}>{tokenVisible ? '隐藏' : '显示'}</button></div><small className="muted">关闭此窗口后清除本次展示的凭据。</small>{modalError && <p className="instance-error" role="alert">{modalError}</p>}</div><div className="modal-actions"><button onClick={closeModal}>关闭</button><button className="primary" onClick={() => void navigator.clipboard.writeText(modal.token).then(() => setNotice('令牌已复制')).catch(e => setModalError(`复制失败：${messageOf(e)}，请显示令牌后手动复制。`))}>复制令牌</button></div></>}
