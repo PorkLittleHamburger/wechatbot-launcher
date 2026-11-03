@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import tempfile
+import uuid
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath
@@ -200,6 +201,7 @@ class VersionStore:
             if expected_version is not None and raw["version"] != expected_version:
                 raise ConfigError("下载包版本号与所选版本不一致")
             target = self.directory / raw["version"]
+            replacing = False
             if target.exists():
                 installed = validate_manifest(target)
                 if installed != raw:
@@ -207,15 +209,30 @@ class VersionStore:
                         raise ConfigError("相同版本号已安装不同内容，请使用不同版本号")
                     if referenced_versions and raw["version"] in referenced_versions:
                         raise ConfigError("该版本仍被实例或归档引用，不能替换")
+                    replacing = True
+                else:
+                    return {"version": raw["version"], "path": str(target), "compatible": True}
+            # Windows TemporaryDirectory has a protected owner/admin-only DACL.
+            # Renaming its payload preserves that ACL and locks out a non-elevated
+            # WeChat process. Copy into a fresh sibling that inherits the workspace
+            # ACL; never relax permissions on existing versions or private staging.
+            publication = staging / f"publish-{uuid.uuid4().hex}"
+            try:
+                shutil.copytree(stage, publication)
+                validate_manifest(publication)
+                if replacing:
                     previous = Path(temporary) / "previous"
                     target.rename(previous)
                     try:
-                        stage.rename(target)
+                        publication.rename(target)
                     except BaseException:
                         previous.rename(target)
                         raise
-            else:
-                stage.rename(target)
+                else:
+                    publication.rename(target)
+            finally:
+                if publication.exists():
+                    shutil.rmtree(publication)
             return {"version": raw["version"], "path": str(target), "compatible": True}
 
     async def import_archive(self, path: Path, *, replace: bool = False,

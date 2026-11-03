@@ -302,6 +302,75 @@ async def test_legacy_portable_zip_gets_manifest_and_launcher_runtime(store, tmp
     assert store.list()[0]["compatible"] is True
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows DACL inheritance")
+@pytest.mark.parametrize("archive", [False, True])
+@pytest.mark.asyncio
+async def test_published_runtime_inherits_workspace_reader_acl(store, bundle_factory, tmp_path, archive):
+    staging = store.root / ".staging"
+    staging.mkdir(parents=True)
+    # Only an isolated test directory is changed; no installed runtime or user data.
+    subprocess.run(
+        ["icacls.exe", str(staging), "/grant", "*S-1-5-32-545:(OI)(CI)(RX)"],
+        check=True, capture_output=True,
+    )
+    bundle = bundle_factory()
+    if archive:
+        await store.import_archive(zip_bundle(bundle, tmp_path / "runtime.zip"))
+    else:
+        await store.import_directory(bundle)
+    for path in (store.resolve("0.8.0"), store.resolve("0.8.0") / "python/python.exe"):
+        env = os.environ.copy()
+        env["WECHAT_TEST_ACL"] = str(path)
+        env.pop("PSModulePath", None)
+        preferred = Path("D:/Tool/PowerShell-7.6.6-win-x64/pwsh.exe")
+        shell = str(preferred) if preferred.is_file() else (shutil.which("pwsh") or "powershell.exe")
+        result = subprocess.run(
+            [shell, "-NoProfile", "-NonInteractive", "-Command",
+             "$ErrorActionPreference='Stop'; @((Get-Acl -LiteralPath $env:WECHAT_TEST_ACL).Access | Where-Object { "
+             "$_.IsInherited -and $_.IdentityReference.Translate("
+             "[Security.Principal.SecurityIdentifier]).Value -eq 'S-1-5-32-545' }).Count"],
+            env=env, capture_output=True, text=True, check=True, timeout=30,
+        )
+        assert int(result.stdout.strip()) > 0, f"Workspace reader ACL lost on {path}"
+    assert list(staging.iterdir()) == []
+
+
+@pytest.mark.parametrize("failure", ["copy", "rename"])
+@pytest.mark.asyncio
+async def test_publication_failure_preserves_previous_runtime(store, bundle_factory, tmp_path, monkeypatch, failure):
+    await store.import_directory(bundle_factory())
+    installed = store.resolve("0.8.0")
+    before = tree_bytes(installed)
+    replacement = tmp_path / "replacement"
+    shutil.copytree(installed, replacement)
+    (replacement / "webui/index.html").write_text("replacement", encoding="utf-8")
+    write_manifest(replacement)
+    original_copy = shutil.copytree
+    original_rename = Path.rename
+
+    def copy(source, destination, *args, **kwargs):
+        if Path(destination).name.startswith("publish-"):
+            Path(destination).mkdir()
+            raise OSError("publication copy failed")
+        return original_copy(source, destination, *args, **kwargs)
+
+    def rename(source, destination):
+        if source.name.startswith("publish-"):
+            raise OSError("publication rename failed")
+        return original_rename(source, destination)
+
+    if failure == "copy":
+        monkeypatch.setattr(shutil, "copytree", copy)
+    else:
+        monkeypatch.setattr(Path, "rename", rename)
+    with pytest.raises(OSError, match="publication"):
+        await store.import_archive(
+            zip_bundle(replacement, tmp_path / "replacement.zip"), replace=True,
+        )
+    assert tree_bytes(installed) == before
+    assert list((store.root / ".staging").iterdir()) == []
+
+
 def free_port():
     with socket.socket() as sock:
         if os.name == "nt":
