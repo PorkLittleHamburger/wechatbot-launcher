@@ -11,7 +11,7 @@ def test_runtime_staging_injects_launcher_into_external_gateway(tmp_path, monkey
     staging = importlib.import_module("stage_desktop_runtime")
     runtime = tmp_path / "gateway"
     for name, content in {
-        "src/wechat_onebot/__init__.py": '__version__ = "0.8.0"\n',
+        "src/wechat_onebot/__init__.py": '__version__ = "0.8.1"\n',
         "webui/index.html": "<html>gateway</html>",
         "THIRD_PARTY_NOTICES.md": "fixture\n",
         "requirements-runtime.lock": "fixture==1.0\n",
@@ -25,7 +25,7 @@ def test_runtime_staging_injects_launcher_into_external_gateway(tmp_path, monkey
     launcher = tmp_path / "launcher"
     backend = launcher / "python/wechat_onebot/launcher"
     backend.mkdir(parents=True)
-    (backend / "__init__.py").write_text('__version__ = "0.8.0"\n', encoding="utf-8")
+    (backend / "__init__.py").write_text('__version__ = "0.8.1"\n', encoding="utf-8")
     (backend / "worker.py").write_text("# launcher worker fixture\n", encoding="utf-8")
     calls = []
 
@@ -48,4 +48,4 @@ def test_runtime_staging_injects_launcher_into_external_gateway(tmp_path, monkey
     assert "src/wechat_onebot/__init__.py" in manifest["files"]
     worker = installed / "src/wechat_onebot/launcher/worker.py"
     assert worker.read_text() == "# launcher worker fixture\n"
-    assert (launcher / "dist/wechat-onebot-runtime-0.8.0-windows-x64.zip").is_file()
+    assert (launcher / "dist/wechat-onebot-runtime-0.8.1-windows-x64.zip").is_file()

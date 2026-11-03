@@ -196,7 +196,7 @@ export default function App() {
     <aside className="sidebar">
       <div className="brand"><span className="logo" aria-hidden="true">◈</span><div><strong>WeChat OneBot</strong><small>DESKTOP WORKSPACE</small></div></div>
       <nav aria-label="主导航">{pages.map(([title, icon]) => <button key={title} className={page === title ? 'nav-item selected' : 'nav-item'} aria-current={page === title ? 'page' : undefined} onClick={() => setPage(title)}><span aria-hidden="true">{icon}</span>{title}</button>)}</nav>
-      <div className="sidebar-bottom"><span className="version-label">桌面启动器 · {snapshot?.version ?? '0.8.0'}</span><button className="text-button" onClick={() => void run('workspace', '打开工作空间', () => invoke('reveal_workspace'))}>打开工作空间 ↗</button></div>
+      <div className="sidebar-bottom"><span className="version-label">桌面启动器 · {snapshot?.version ?? '0.8.1'}</span><button className="text-button" onClick={() => void run('workspace', '打开工作空间', () => invoke('reveal_workspace'))}>打开工作空间 ↗</button></div>
     </aside>
     <main>
       <header className="topbar"><span className="muted">工作空间 <b>/ {page}</b></span><span className={`connection ${connected ? 'online' : ''}`} role="status"><i />{connected ? '本地服务已连接' : '等待本地服务'}</span></header>
@@ -253,7 +253,7 @@ export default function App() {
             <div className="panel-actions"><button className="danger" onClick={() => confirm('退出启动器', '确定退出桌面启动器吗？', 'exit', () => invoke('exit_app'))}>退出应用</button></div>
           </section>
         </>}
-        <footer><span className="workspace-root" title={snapshot?.root}>{snapshot?.root || '本地桌面工作空间'}</span><span>WeChat OneBot · {snapshot?.version ?? '0.8.0'}</span></footer>
+        <footer><span className="workspace-root" title={snapshot?.root}>{snapshot?.root || '本地桌面工作空间'}</span><span>WeChat OneBot · {snapshot?.version ?? '0.8.1'}</span></footer>
       </div>
     </main>
 

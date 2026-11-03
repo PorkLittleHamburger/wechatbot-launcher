@@ -36,8 +36,8 @@ pwsh -File scripts/build_desktop.ps1
 | Python | 72 项通过；仅有现有 Starlette/httpx 弃用提示 |
 | 前端 | TypeScript 检查与 Vite 生产构建通过 |
 | Rust | 4 项通过，包括数据目录偏好和打包 Python 管理服务通信/退出 |
-| 运行时 | 0.8.0，清单记录 1,382 个文件，启动器 worker 已合并 |
-| 安装器 | `WeChat-OneBot-Launcher_0.8.0_x64-setup.exe`，SHA-256 `0a03e0666c886674ac6e2747b597de90eed488d356fe3381c4ed4ea5722367b7` |
+| 运行时 | 0.8.1，清单记录 1,382 个文件，启动器 worker 已合并 |
+| 安装器 | `WeChat-OneBot-Launcher_0.8.1_x64-setup.exe`，SHA-256 `c6c3946fe281a4b4f345ab6317a4c733bb66a988768797267b30e4a840c8cbce` |
 | 浏览器管理 | 入口、页面、HTTP 管理服务及专用测试均已移除 |
 
 以上结果不替代 UAC、任务计划、NSIS 图形流程、托盘、真实安装卸载或真实微信桥接验证。
