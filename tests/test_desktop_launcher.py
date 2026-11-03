@@ -445,6 +445,36 @@ async def test_new_workspace_never_installs_bundled_gateway(tmp_path, bundle_fac
         await manager.close()
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Windows verbatim paths')
+@pytest.mark.asyncio
+async def test_legacy_verbatim_workspace_uses_plain_gateway_paths(tmp_path, bundle_factory):
+    from wechat_onebot.launcher.desktop_manager import DesktopManager
+    from wechat_onebot.launcher.paths import process_path
+    root = tmp_path / '工作空间 with spaces'
+    root.mkdir()
+    project = bundle_factory()
+    prefix = chr(92) * 2 + '?' + chr(92)
+    manager = DesktopManager(Path(prefix + str(root)), Path(prefix + str(project)))
+    try:
+        assert manager.root == root.resolve()
+        assert manager.project == project.resolve()
+        await manager.initialize()
+        await manager.versions.import_directory(project)
+        row = await manager.create('Plain process paths', 'helper', free_port())
+        config = AppConfig.load(manager.directory(row['id']) / 'config.json')
+        for path in (config.driver.helper_root, config.storage.data_dir, config.storage.media_dir):
+            assert not str(path).startswith(prefix)
+        # A distinct NTFS trailing-dot directory must never be reinterpreted.
+        ordinary = root / 'name'
+        ordinary.mkdir()
+        dotted = Path(prefix + str(root / 'name.'))
+        dotted.mkdir()
+        assert process_path(dotted) == dotted.resolve()
+        dotted.rmdir()
+    finally:
+        await manager.close()
+
+
 @pytest.mark.asyncio
 async def test_two_real_desktop_mock_workers_use_separate_version_projects(desktop, bundle_factory, tmp_path):
     await add_version(desktop, bundle_factory, tmp_path)
@@ -903,12 +933,16 @@ async def test_supervisor_stdin_eof_stops_real_mock_child_and_releases_leases(su
             kernel.CloseHandle(process_handle)
 
 
-def seed_absolute_storage(manager, row):
+def seed_absolute_storage(manager, row, *, verbatim=False):
     directory = manager.directory(row["id"])
     path = directory / "config.json"
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw["storage"].update(data_dir=str(directory / "workspace data"),
                           media_dir=str(directory / "media files"))
+    if verbatim:
+        prefix = chr(92) * 2 + '?' + chr(92)
+        for key in ('data_dir', 'media_dir'):
+            raw['storage'][key] = prefix + raw['storage'][key]
     path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     config = seed_instance(manager, row)
     (config.storage.data_dir / "persisted.bin").write_bytes(b"\x00absolute storage data\xff")
@@ -916,10 +950,39 @@ def seed_absolute_storage(manager, row):
     return config
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Windows verbatim special names')
+@pytest.mark.parametrize('suffix', ['.', ' '])
 @pytest.mark.asyncio
-async def test_absolute_local_storage_backup_restore_keeps_live_config_unchanged(desktop):
+async def test_verbatim_special_storage_refuses_ambiguous_backup_and_archive(desktop, suffix):
+    row = await desktop.create('Special storage', 'mock', free_port(), version='0.8.0')
+    directory = desktop.directory(row['id'])
+    ordinary = directory / 'name'
+    ordinary.mkdir()
+    (ordinary / 'different.bin').write_bytes(b'ordinary directory')
+    prefix = chr(92)*2 + '?' + chr(92)
+    special = Path(prefix + str(directory / ('name' + suffix)))
+    special.mkdir()
+    (special / 'persisted.bin').write_bytes(b'verbatim directory')
+    config = directory / 'config.json'
+    raw = json.loads(config.read_text(encoding='utf-8'))
+    raw['storage']['data_dir'] = str(special)
+    config.write_text(json.dumps(raw), encoding='utf-8')
+    desktop.check_config(row['id'])
+    before = config.read_bytes()
+    for operation in (desktop.backup, desktop.archive):
+        with pytest.raises(ValueError, match='特殊名称'):
+            await operation(row['id'])
+        assert config.read_bytes() == before
+        assert (ordinary / 'different.bin').read_bytes() == b'ordinary directory'
+        assert (special / 'persisted.bin').read_bytes() == b'verbatim directory'
+    assert list((desktop.root / 'backups').iterdir()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('verbatim', [False, pytest.param(True, marks=pytest.mark.skipif(os.name != 'nt', reason='Windows paths'))])
+async def test_absolute_local_storage_backup_restore_keeps_live_config_unchanged(desktop, verbatim):
     row = await desktop.create("Absolute backup", "mock", free_port(), version="0.8.0")
-    original = seed_absolute_storage(desktop, row)
+    original = seed_absolute_storage(desktop, row, verbatim=verbatim)
     directory = desktop.directory(row["id"])
     live_config = (directory / "config.json").read_bytes()
     original_data = tree_bytes(original.storage.data_dir)
@@ -947,15 +1010,16 @@ async def test_absolute_local_storage_backup_restore_keeps_live_config_unchanged
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('verbatim', [False, pytest.param(True, marks=pytest.mark.skipif(os.name != 'nt', reason='Windows paths'))])
 async def test_absolute_local_storage_failed_upgrade_rolls_back_without_journal(
-    desktop, bundle_factory, tmp_path, monkeypatch,
+    desktop, bundle_factory, tmp_path, monkeypatch, verbatim,
 ):
     bad = bundle_factory("0.9.0", runnable=True)
     (bad / "src/wechat_onebot/launcher/worker.py").write_text("raise SystemExit(19)\n", encoding="utf-8")
     write_manifest(bad, "0.9.0")
     await desktop.versions.import_archive(zip_bundle(bad, tmp_path / "absolute-broken-runtime.zip"))
     row = await desktop.create("Absolute rollback", "mock", free_port(), version="0.8.0")
-    original = seed_absolute_storage(desktop, row)
+    original = seed_absolute_storage(desktop, row, verbatim=verbatim)
     original_data = tree_bytes(original.storage.data_dir)
     original_media = tree_bytes(original.storage.media_dir)
     processes = []
@@ -986,9 +1050,10 @@ async def test_absolute_local_storage_failed_upgrade_rolls_back_without_journal(
 
 
 @pytest.mark.asyncio
-async def test_absolute_local_storage_archive_restore_preserves_archived_data(desktop):
+@pytest.mark.parametrize('verbatim', [False, pytest.param(True, marks=pytest.mark.skipif(os.name != 'nt', reason='Windows paths'))])
+async def test_absolute_local_storage_archive_restore_preserves_archived_data(desktop, verbatim):
     row = await desktop.create("Absolute archive", "mock", free_port(), version="0.8.0")
-    original = seed_absolute_storage(desktop, row)
+    original = seed_absolute_storage(desktop, row, verbatim=verbatim)
     original_data = tree_bytes(original.storage.data_dir)
     original_media = tree_bytes(original.storage.media_dir)
     await desktop.archive(row["id"])

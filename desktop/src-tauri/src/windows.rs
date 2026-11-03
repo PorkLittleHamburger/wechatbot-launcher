@@ -41,6 +41,9 @@ impl Drop for Attributes {
 
 impl Process {
     pub fn spawn(python: &Path, project: &Path, root: &Path) -> io::Result<(Self, File, File)> {
+        let python = super::paths::process_path(python);
+        let project = super::paths::process_path(project);
+        let root = super::paths::process_path(root);
         let job = owned(unsafe { CreateJobObjectW(ptr::null(), ptr::null()) })?;
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { mem::zeroed() };
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;

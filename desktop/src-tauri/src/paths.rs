@@ -32,7 +32,26 @@ pub fn save_workspace(root: &Path) -> Result<(), String> {
 
 pub fn prepare_workspace(root: PathBuf) -> Result<PathBuf, String> {
     std::fs::create_dir_all(&root).map_err(|e| format!("Create workspace: {e}"))?;
-    root.canonicalize().map_err(|e| format!("Resolve workspace: {e}"))
+    root.canonicalize().map(|path| process_path(&path)).map_err(|e| format!("Resolve workspace: {e}"))
+}
+
+// Keep filesystem identity checks canonical, but don't leak unnecessary verbatim
+// DOS paths into Python or third-party validators. Preserve long/device/UNC paths.
+pub fn process_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::{os::windows::ffi::{OsStrExt, OsStringExt}, path::{Component, Prefix}};
+        if matches!(path.components().next(), Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::VerbatimDisk(_))) {
+            let wide: Vec<_> = path.as_os_str().encode_wide().collect();
+            if wide.len() - 4 < 260 {
+                let plain = PathBuf::from(OsString::from_wide(&wide[4..]));
+                if let (Ok(actual), Ok(candidate)) = (path.canonicalize(), plain.canonicalize()) {
+                    if actual == candidate { return plain; }
+                }
+            }
+        }
+    }
+    path.to_path_buf()
 }
 
 impl Options {
@@ -96,6 +115,32 @@ pub fn workspace_key(root: &std::path::Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn process_paths_normalize_only_equivalent_short_local_paths() {
+        use std::path::{Component, Prefix};
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("wechat process 中文 {nonce}"));
+        std::fs::create_dir(&root).unwrap();
+        let verbatim = root.canonicalize().unwrap();
+        let plain = super::process_path(&verbatim);
+        assert!(!matches!(plain.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::VerbatimDisk(_))));
+        assert_eq!(plain.canonicalize().unwrap(), verbatim);
+        assert_eq!(super::prepare_workspace(verbatim.clone()).unwrap(), plain);
+        let dotted = verbatim.join("name.");
+        std::fs::create_dir(verbatim.join("name")).unwrap();
+        std::fs::create_dir(&dotted).unwrap();
+        assert_eq!(super::process_path(&dotted), dotted);
+        std::fs::remove_dir(dotted).unwrap();
+        std::fs::remove_dir(verbatim.join("name")).unwrap();
+        std::fs::remove_dir(root).unwrap();
+        for value in [r"\\?\UNC\server\share\data", r"\\.\C:\data"] {
+            assert_eq!(super::process_path(std::path::Path::new(value)), std::path::PathBuf::from(value));
+        }
+        let long = std::path::PathBuf::from(format!(r"\\?\C:\{}", "a".repeat(260)));
+        assert_eq!(super::process_path(&long), long);
+    }
+
     #[cfg(windows)]
     #[test]
     fn quotes_spaces_quotes_and_trailing_backslashes() {

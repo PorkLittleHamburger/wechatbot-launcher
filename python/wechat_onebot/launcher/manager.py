@@ -19,6 +19,7 @@ import httpx
 
 from ..config import ConfigError, _atomic_write_json, default_config
 from .locking import DirectoryLease
+from .paths import identity_path, is_within, process_path, relative_storage_path
 
 
 @dataclass
@@ -34,8 +35,9 @@ class LauncherManager:
     """Own child handles; persistent manifests never contain trusted PIDs."""
 
     def __init__(self, root: Path, project: Path):
-        self.root = root.resolve()
-        self.project = project.resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        self.root = process_path(root)
+        self.project = process_path(project)
         self.instances = self.root / "instances"
         self.instances.mkdir(parents=True, exist_ok=True)
         self.slots: dict[str, ProcessSlot] = {}
@@ -47,7 +49,7 @@ class LauncherManager:
             raise ConfigError("实例 ID 无效")
         path = self.instances / instance_id
         # Refuse junction/symlink escapes too.
-        if path.resolve().parent != self.instances.resolve():
+        if identity_path(path).parent != identity_path(self.instances):
             raise ConfigError("实例目录超出数据目录")
         return path
 
@@ -176,7 +178,7 @@ class LauncherManager:
             raise ConfigError("实例驱动与清单不一致")
         for key in ("data_dir", "media_dir"):
             target = (directory / raw["storage"][key]).resolve()
-            if not target.is_relative_to(directory.resolve()):
+            if not is_within(target, directory):
                 raise ConfigError("实例数据路径必须位于本实例目录内")
         if row["mode"] == "helper":
             import ctypes
@@ -287,7 +289,7 @@ class LauncherManager:
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 for path in directory.rglob("*"):
                     if path.is_file() and path != directory / "launcher.lock":
-                        if not path.resolve().is_relative_to(directory.resolve()):
+                        if not is_within(path, directory):
                             raise ConfigError("备份包含实例目录外的链接")
                         if path == directory / "config.json":
                             raw = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -295,10 +297,10 @@ class LauncherManager:
                             for key in ("data_dir", "media_dir"):
                                 value = raw["storage"][key]
                                 resolved = (directory / value).resolve()
-                                if not resolved.is_relative_to(directory.resolve()):
+                                if not is_within(resolved, directory):
                                     raise ConfigError("备份数据路径超出实例目录")
                                 if Path(value).is_absolute():
-                                    raw["storage"][key] = os.path.relpath(resolved, directory)
+                                    raw["storage"][key] = relative_storage_path(resolved, directory)
                                     changed = True
                             if changed:
                                 archive.writestr("config.json", json.dumps(raw, ensure_ascii=False, indent=2) + "\n")
@@ -321,10 +323,10 @@ class LauncherManager:
             for key in ("data_dir", "media_dir"):
                 value = raw["storage"][key]
                 resolved = (directory / value).resolve()
-                if not resolved.is_relative_to(directory.resolve()):
+                if not is_within(resolved, directory):
                     raise ConfigError("归档数据路径超出实例目录")
                 if Path(value).is_absolute():
-                    raw["storage"][key] = os.path.relpath(resolved, directory)
+                    raw["storage"][key] = relative_storage_path(resolved, directory)
                     changed = True
             if changed:
                 _atomic_write_json(config_path, raw)

@@ -56,6 +56,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build_desktop.ps1
 
 0.8.3 发布使用 Bot `v0.8.3`（提交 `96ef2dfc2b8918e27f1b554dabd3db6dac00a34f`），CI 固定检出该提交。集成 Bot 修复后必须完整组装运行时。无论新下载还是复用缓存 Python，组装都会执行隔离解释器的依赖导入和 `vendor/helper/native/bridge_watchdog.py --help`；失败时输出退出码及标准错误并阻止产物发布。此检查不启动微信桥接。组装结果用于启动器后台和单独发布的运行时 ZIP，不在首次启动时自动安装到版本库。
 
+当前待发布开发分支已将 CI 来源固定为 Bot `4209c5bac1c70fe776fa448af6982e3c50cf8480`，包含文件/语音扩展本地路径校验修复。不要用旧运行时缓存替代新源码组装；新版本发布时需重新确定正式版本号与来源。本地隔离集成检查可使用此提交的便携构建，再合并当前 launcher 包，不覆盖已安装或已发布产物。
+
 产物输出到仓库根目录 `dist`：
 
 - `WeChat-OneBot-Launcher_<版本>_x64-setup.exe`

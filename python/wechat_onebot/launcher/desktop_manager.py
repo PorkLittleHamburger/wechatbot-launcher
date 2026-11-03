@@ -20,6 +20,7 @@ from .locking import DirectoryLease
 from .manager import LauncherManager, ProcessSlot
 from .versions import VersionStore, extract_checked
 from .self_update import LauncherUpdater
+from .paths import identity_path, is_within, relative_storage_path
 
 DEFAULT_SETTINGS = {"close_to_tray": True, "autostart": False,
                     "autostart_hidden": False, "restore_instances": False}
@@ -185,7 +186,7 @@ class DesktopManager(LauncherManager):
         if not isinstance(name, str) or Path(name).name != name or "\\" in name or ":" in name:
             raise ConfigError("备份名称无效")
         path = self.root / "backups" / name
-        if not path.is_file() or not path.resolve().is_relative_to((self.root / "backups").resolve()):
+        if not path.is_file() or not is_within(path, self.root / "backups"):
             raise ConfigError("备份不存在")
         return path
 
@@ -200,7 +201,7 @@ class DesktopManager(LauncherManager):
         if row.get("mode") not in ("mock", "helper"):
             raise ConfigError("备份驱动无效")
         for path in (config.storage.data_dir, config.storage.media_dir):
-            if not path.resolve().is_relative_to(stage.resolve()):
+            if not is_within(path, stage):
                 raise ConfigError("备份数据目录必须位于实例目录内")
         return row
 
@@ -224,7 +225,7 @@ class DesktopManager(LauncherManager):
                 config["driver"]["type"] = row["mode"]
                 # Normalize paths to the new instance, never retain old absolutes.
                 for key in ("data_dir", "media_dir"):
-                    config["storage"][key] = os.path.relpath((stage / config["storage"][key]).resolve(), stage)
+                    config["storage"][key] = relative_storage_path(stage / config["storage"][key], stage)
                 _atomic_write_json(config_path, config)
                 _atomic_write_json(stage / "instance.json", row)
                 self._bind_version(stage, self.versions.resolve(row["version"]))
@@ -239,7 +240,7 @@ class DesktopManager(LauncherManager):
         if Path(archive_name).name != archive_name or "\\" in archive_name or ":" in archive_name:
             raise ConfigError("归档名称无效")
         source = self.root / "archive" / archive_name
-        if not source.is_dir() or source.resolve().parent != (self.root / "archive").resolve():
+        if not source.is_dir() or identity_path(source).parent != identity_path(self.root / "archive"):
             raise ConfigError("归档不存在")
         with tempfile.TemporaryDirectory(prefix="archive-", dir=self.root) as temporary:
             package = Path(temporary) / "restore.zip"
@@ -247,7 +248,7 @@ class DesktopManager(LauncherManager):
                 with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as output:
                     for item in source.rglob("*"):
                         if item.is_file() and item != source / "launcher.lock":
-                            if not item.resolve().is_relative_to(source.resolve()):
+                            if not is_within(item, source):
                                 raise ConfigError("归档包含越界链接")
                             output.write(item, item.relative_to(source))
             await VersionStore._thread(pack)
