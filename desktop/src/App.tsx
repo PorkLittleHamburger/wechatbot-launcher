@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { version as desktopVersion } from '../package.json';
 import { messageOf, rpc } from './api';
+import { displayPath } from './path-display';
 import type { Archive, InstalledVersion, Instance, OperationProgress, Release, Settings, Snapshot } from './types';
 
 type Page = '实例管理' | '版本管理' | '备份恢复' | '日志' | '设置';
@@ -188,7 +189,7 @@ export default function App() {
       const path = await open({ title: method === 'version_import' ? '选择版本 ZIP 安装包' : '选择本地 ZIP 备份', multiple: false, directory: false, filters: [{ name: 'ZIP 压缩包', extensions: ['zip'] }] });
       if (typeof path !== 'string') return false;
       if (method === 'restore') {
-        confirm('恢复本地备份', `确定从“${path}”恢复实例吗？`, key, () => rpc('restore', { path }));
+        confirm('恢复本地备份', `确定从“${displayPath(path)}”恢复实例吗？`, key, () => rpc('restore', { path }));
         return false;
       } else await rpc('version_import', { path });
     });
@@ -199,7 +200,7 @@ export default function App() {
     try {
       const path = await open({ title: '选择数据目录', multiple: false, directory: true });
       if (typeof path !== 'string') return;
-      confirm('更改数据目录', `将切换到“${path}”。启动器会自动重启；当前实例、版本和备份不会自动迁移。`, 'workspace:change', () => invoke('change_workspace', { path }));
+      confirm('更改数据目录', `将切换到“${displayPath(path)}”。启动器会自动重启；当前实例、版本和备份不会自动迁移。`, 'workspace:change', () => invoke('change_workspace', { path }));
     } catch (e) {
       report('选择数据目录', e);
     }
@@ -239,7 +240,7 @@ export default function App() {
         </>}
 
         {page === '版本管理' && <>
-          <section className="panel"><div className="section-heading"><div><h2>已安装版本 <span className="badge">{versions.length}</span></h2><p className="muted">创建实例时可选择不同版本；升级前请先停止实例。</p></div><button disabled={versionBusy} onClick={() => void listVersions()}>↻ 刷新已安装</button></div>{!versions.length ? <div className="empty compact">尚未安装版本。可导入本地 ZIP，或从下方下载可用版本。</div> : versions.map(v => <div className="list-row" key={v.version}><div className="row-copy"><strong>{v.version}</strong><small className="mono">{v.path}</small><small>{instances.filter(i => i.version === v.version).length} 个实例正在使用此版本</small></div><button className="danger" disabled={versionBusy || instances.some(i => i.version === v.version) || (snapshot?.archives ?? []).some(i => i.version === v.version)} title="实例或归档仍使用的版本不能移除" onClick={() => confirm('移除版本', `确定移除已安装版本 ${v.version} 吗？`, `version:${v.version}`, () => rpc('version_remove', { version: v.version }))}>移除</button></div>)}</section>
+          <section className="panel"><div className="section-heading"><div><h2>已安装版本 <span className="badge">{versions.length}</span></h2><p className="muted">创建实例时可选择不同版本；升级前请先停止实例。</p></div><button disabled={versionBusy} onClick={() => void listVersions()}>↻ 刷新已安装</button></div>{!versions.length ? <div className="empty compact">尚未安装版本。可导入本地 ZIP，或从下方下载可用版本。</div> : versions.map(v => <div className="list-row" key={v.version}><div className="row-copy"><strong>{v.version}</strong><small className="mono" title={displayPath(v.path)}>{displayPath(v.path)}</small><small>{instances.filter(i => i.version === v.version).length} 个实例正在使用此版本</small></div><button className="danger" disabled={versionBusy || instances.some(i => i.version === v.version) || (snapshot?.archives ?? []).some(i => i.version === v.version)} title="实例或归档仍使用的版本不能移除" onClick={() => confirm('移除版本', `确定移除已安装版本 ${v.version} 吗？`, `version:${v.version}`, () => rpc('version_remove', { version: v.version }))}>移除</button></div>)}</section>
           <section className="panel"><div className="section-heading"><div><h2>可用发布版本</h2><p className="muted">兼容性由本地服务检查，下载失败后可以重试。</p></div><button disabled={busy.has('releases')} onClick={() => void loadReleases()}>{busy.has('releases') ? '获取中…' : releases ? '↻ 重新获取' : '获取版本列表'}</button></div>{releases === null ? <div className="empty compact">点击“获取版本列表”查看可安装的发布版本。</div> : !releases.length ? <div className="empty compact">暂未找到可用发布版本，可稍后重试或导入本地 ZIP。</div> : releases.map(r => <div className="list-row" key={r.version}><div className="row-copy"><strong>{r.name || r.version} <span className={`badge ${r.compatible ? 'running' : 'failed'}`}>{r.compatible ? '兼容' : '不兼容'}</span></strong><small>{r.version} · {r.published_at ? r.published_at.slice(0, 10) : '发布日期未知'} · {sizeOf(r.size)}</small>{!r.compatible && <small className="danger">{r.reason || '当前系统或版本不满足安装条件。'}</small>}</div><button className="primary" disabled={!r.compatible || versionBusy || versions.some(v => v.version === r.version)} onClick={() => void downloadVersion(r)}>{versions.some(v => v.version === r.version) ? '已安装' : busy.has(`version:${r.version}`) ? '下载中…' : '下载并安装'}</button></div>)}</section>
         </>}
 
@@ -262,7 +263,7 @@ export default function App() {
             <div className="data-directory">
               <strong>当前数据目录</strong>
               <div className="path-control">
-                <span className="mono" title={snapshot?.root}>{snapshot?.root || '等待本地服务连接…'}</span>
+                <span className="mono" title={displayPath(snapshot?.root)}>{displayPath(snapshot?.root) || '等待本地服务连接…'}</span>
                 <button disabled={!snapshot || busy.has('workspace')} onClick={() => void run('workspace', '打开数据目录', () => invoke('reveal_workspace'))}>打开</button>
                 <button className="primary" disabled={!snapshot || busy.has('workspace:change') || anyActive} title={anyActive ? '请先停止所有实例' : '选择新的数据目录并重启启动器'} onClick={() => void chooseWorkspace()}>更改</button>
               </div>
@@ -271,7 +272,7 @@ export default function App() {
             <div className="panel-actions"><button className="danger" onClick={() => confirm('退出启动器', '确定退出桌面启动器吗？', 'exit', () => invoke('exit_app'))}>退出应用</button></div>
           </section>
         </>}
-        <footer><span className="workspace-root" title={snapshot?.root}>{snapshot?.root || '本地桌面工作空间'}</span><span>WeChat OneBot · {snapshot?.version ?? desktopVersion}</span></footer>
+        <footer><span className="workspace-root" title={displayPath(snapshot?.root)}>{displayPath(snapshot?.root) || '本地桌面工作空间'}</span><span>WeChat OneBot · {snapshot?.version ?? desktopVersion}</span></footer>
       </div>
     </main>
 
