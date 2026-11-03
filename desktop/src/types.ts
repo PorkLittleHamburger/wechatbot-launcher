@@ -11,6 +11,7 @@ export interface Settings {
 export interface Snapshot {
   instances: Instance[]; versions: InstalledVersion[]; backups: Backup[]; archives: Archive[];
   settings: Settings; root: string; version: string;
+  autostart_error?: string | null;
 }
 export interface Release {
   version: string; name: string; published_at: string; compatible: boolean;

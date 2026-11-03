@@ -20,6 +20,7 @@ struct Shell {
     ipc: Arc<ipc::Ipc>,
     root: PathBuf,
     settings: Mutex<()>,
+    autostart_error: Mutex<Option<String>>,
     update_gate: RwLock<()>,
     exiting: AtomicBool,
     exit_complete: AtomicBool,
@@ -57,19 +58,28 @@ async fn rpc(window: WebviewWindow, state: tauri::State<'_, Shell>, method: Stri
     if state.exiting.load(Ordering::Acquire) { return Err("Launcher is shutting down".into()); }
     if method == "shutdown" { return Err("Use exit_app for desktop shutdown".into()); }
     if !params.is_object() { return Err("RPC params must be an object".into()); }
+    if method == "snapshot" {
+        let _transaction = state.settings.lock().await;
+        let mut snapshot = state.ipc.request(&method, params).await?;
+        snapshot["autostart_error"] = json!(*state.autostart_error.lock().await);
+        return Ok(snapshot);
+    }
     if method != "settings_set" { return state.ipc.request(&method, params).await; }
     let _transaction = state.settings.lock().await;
     let before = state.ipc.request("settings_get", json!({})).await?;
     let after = state.ipc.request("settings_set", params).await?;
-    if before.get("autostart") != after.get("autostart") {
+    {
         let enabled = after.get("autostart").and_then(Value::as_bool).ok_or("Invalid autostart setting from supervisor")?;
         if let Err(error) = scheduler::configure(enabled, &state.root).await {
+            *state.autostart_error.lock().await = Some(error.clone());
+            let _ = std::fs::write(state.root.join("autostart.log"), &error);
             let rollback = state.ipc.request("settings_set", before).await;
             return Err(match rollback {
                 Ok(_) => format!("Autostart task update failed; Python settings restored: {error}"),
                 Err(rollback) => format!("Autostart task update failed: {error}; settings rollback also failed: {rollback}"),
             });
         }
+        *state.autostart_error.lock().await = None;
     }
     Ok(after)
 }
@@ -184,7 +194,7 @@ fn main() {
             let project = app.path().resource_dir()?.join("runtime");
             let ipc = ipc::Ipc::spawn(app.handle().clone(), &project, &options.root).map_err(std::io::Error::other)?;
             let hidden = options.autostart && setting(&options.root, "autostart_hidden", false);
-            app.manage(Shell { ipc: ipc.clone(), root: options.root, settings: Mutex::new(()), update_gate: RwLock::new(()), exiting: AtomicBool::new(false), exit_complete: AtomicBool::new(false) });
+            app.manage(Shell { ipc: ipc.clone(), root: options.root, settings: Mutex::new(()), autostart_error: Mutex::new(None), update_gate: RwLock::new(()), exiting: AtomicBool::new(false), exit_complete: AtomicBool::new(false) });
             let show = tauri::menu::MenuItem::with_id(app, "show", "显示启动器", true, None::<&str>)?;
             let exit = tauri::menu::MenuItem::with_id(app, "exit", "退出", true, None::<&str>)?;
             let menu = tauri::menu::Menu::with_items(app, &[&show, &exit])?;
@@ -202,6 +212,24 @@ fn main() {
                     let _ = handle.emit_to("main", "fatal", json!({"message": error}));
                     show_main(&handle);
                     ipc.shutdown().await;
+                    return;
+                }
+                // Repair tasks lost during upgrades even when the saved checkbox
+                // has not changed. Serialize against saves and workspace changes.
+                let state = handle.state::<Shell>();
+                let _transaction = state.settings.lock().await;
+                if state.exiting.load(Ordering::Acquire) { return; }
+                let result = match ipc.request("settings_get", json!({})).await {
+                    Ok(settings) => match settings.get("autostart").and_then(Value::as_bool) {
+                        Some(enabled) => scheduler::configure(enabled, &state.root).await,
+                        None => Err("Invalid autostart setting from supervisor".into()),
+                    },
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = result {
+                    let _ = std::fs::write(state.root.join("autostart.log"), &error);
+                    *state.autostart_error.lock().await = Some(error);
+                    show_main(&handle);
                 }
             });
             Ok(())

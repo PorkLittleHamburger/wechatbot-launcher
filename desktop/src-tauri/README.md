@@ -111,14 +111,19 @@ the app. Existing files are not migrated automatically.
 ## Settings and installer behavior
 
 `rpc('settings_set', params)` is serialized in Rust. After Python accepts the
-settings, changing `autostart` configures a current-user logon scheduled task via
+settings, every save reconciles `autostart` with a current-user logon scheduled task via
 `schtasks` XML: `InteractiveToken`, `HighestAvailable`, fixed executable, and
 `--autostart --workspace <root>`. Task names include the current SID and a stable
 workspace hash. An existing task must match this application's Source, user SID,
 and executable before replacement/deletion. No legacy service task is touched.
 Task changes preserve/restore prior task XML on failure; Python settings are
 rolled back if task configuration fails. Any rollback failure is reported too.
-No task is registered merely by building or starting the app.
+Building never registers a task. Startup reconciles the explicitly saved setting
+after the supervisor is ready, under the same settings lock used by saves. This
+repairs missing/disabled tasks after upgrades without toggling the checkbox.
+Registration is read back and verified inside the rollback transaction. Failures
+appear in the snapshot/UI and `autostart.log`; they do not stop the management UI.
+Localized schtasks diagnostics are decoded with the Windows OEM code page.
 
 NSIS installs per-machine in Simplified Chinese. Hooks replace Tauri's stock
 force-kill macro with an exact-file Restart Manager check and manual
