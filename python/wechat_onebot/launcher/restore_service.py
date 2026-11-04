@@ -112,4 +112,3 @@ class RestoreService:
             except BaseException:
                 damaged.rename(directory)
                 raise
-
