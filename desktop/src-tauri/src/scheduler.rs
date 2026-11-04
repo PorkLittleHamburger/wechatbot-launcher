@@ -36,13 +36,13 @@ fn xml(value: &str) -> String {
 }
 
 async fn query(name: &str) -> Result<Option<String>, String> {
-    let (ok, content) = run("schtasks.exe", &["/Query", "/TN", name, "/XML"]).await?;
-    if ok { return Ok(Some(content)); }
-    // Do not mistake access denied or a broken scheduler for an absent task.
-    let (ok, list) = run("schtasks.exe", &["/Query", "/FO", "CSV", "/NH"]).await?;
-    if !ok { return Err(format!("Cannot inspect scheduled tasks: {list}")); }
-    if list.lines().any(|line| line.split(',').next().unwrap_or("").trim_matches('"').trim_start_matches('\\') == name) { return Err(format!("Cannot read existing task: {content}")); }
-    Ok(None)
+    // schtasks /Query encodes XML in the machine's OEM code page. English
+    // Windows can irreversibly replace Chinese paths with '?'. COM returns a
+    // Unicode BSTR; write UTF-8 bytes directly, independently of console locale.
+    let script = format!(r#"$ErrorActionPreference='Stop';$code=0;$text='';try{{$service=[Activator]::CreateInstance([Type]::GetTypeFromProgID('Schedule.Service'));$service.Connect();$text=$service.GetFolder('\').GetTask('{}').Xml}}catch{{$taskException=$_.Exception.GetBaseException();if($taskException.HResult -ne -2147024894 -and $taskException.HResult -ne -2147024893){{$text=$taskException.Message;$code=1}}}};$bytes=[Text.Encoding]::UTF8.GetBytes($text);$stream=[Console]::OpenStandardOutput();$stream.Write($bytes,0,$bytes.Length);exit $code"#, name.replace('\'', "''"));
+    let (ok, content) = run("WindowsPowerShell/v1.0/powershell.exe", &["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &script]).await?;
+    if !ok { return Err(format!("Cannot inspect scheduled task: {content}")); }
+    Ok((!content.trim().is_empty()).then_some(content))
 }
 
 fn verify_owned(content: &str, sid: &str, exe: &Path) -> Result<(), String> {
@@ -193,7 +193,9 @@ mod tests {
         let first = query(&name).await.unwrap().unwrap();
         assert!(!first.contains("LogonTrigger"));
         verify_owned(&first, sid, &std::env::current_exe().unwrap()).unwrap();
-        assert!(first.contains("--autostart") && first.contains("中文"));
+        let doc = roxmltree::Document::parse(first.trim()).unwrap();
+        let args = doc.descendants().find(|n| n.has_tag_name("Arguments")).and_then(|n| n.text()).unwrap();
+        assert!(args.contains("--autostart") && args.contains("中文"), "{args}");
         let (ok, message) = run("schtasks.exe", &["/Change", "/TN", &name, "/DISABLE"]).await.unwrap();
         assert!(ok, "{message}");
         configure_task(true, &root).await.unwrap();

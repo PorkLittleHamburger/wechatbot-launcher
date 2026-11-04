@@ -2,7 +2,7 @@ param([switch]$Launch)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $root 'dist'
-$installer = Join-Path $dist 'WeChat-OneBot-Launcher_0.8.5_x64-setup.exe'
+$installer = Join-Path $dist 'WeChat-OneBot-Launcher_0.8.6_x64-setup.exe'
 if (-not (Test-Path -LiteralPath $installer)) { throw 'Build the offline installer first.' }
 $results = Join-Path $dist 'installer-acceptance'
 New-Item -ItemType Directory -Force -Path $results | Out-Null

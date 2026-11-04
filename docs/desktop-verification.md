@@ -32,7 +32,13 @@ pwsh -File scripts/build_desktop.ps1
 
 版本测试使用本地构造的不同测试版本即可，无需发布 GitHub Release。自动化测试使用 Mock；桌面界面新建实例固定为 Helper，原生微信桥接单独验证。
 
-## 0.8.5 自动化验证
+## 0.8.6 自动化验证
+
+本版包含任务管理器自启支持、旧登录任务迁移和开关状态同步。任务 XML 改为通过系统 PowerShell 调用 Task Scheduler COM，直接输出 UTF-8 字节；不再依赖 `schtasks /Query` 的 OEM 编码，避免英文 Windows 上中文目录丢失。普通权限与管理员权限下的隔离任务回归通过，中文工作目录及 XML Arguments 均按解析后的 Unicode 字符检查。
+
+完整构建固定使用 Bot `v0.8.6` 提交 `23f46eb2d2b4c30c6f4cdf7c3098fb5c915e583f`。最终测试数量、Windows CI 和安装包/运行包校验值随 Release 记录。
+
+## 0.8.5 历史自动化验证
 
 发布源回归检查 Bot 列表使用 `wechatbot/releases.atom` 与 `wechat-onebot-<版本>-windows-x64.zip`，过滤其他仓库链接；启动器本体更新独立使用 Launcher 源。2026-11-03 已通过真实网络从 Bot 发布下载 0.8.5，在隔离临时目录转换便携包、合并当前启动器模块并校验 1,412 个文件，确认手动导入链路及发布源修复可用。此验证不修改现有工作空间或启动微信。
 
