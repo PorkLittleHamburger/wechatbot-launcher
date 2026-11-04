@@ -143,7 +143,11 @@ mod tests {
         let verbatim = helper.canonicalize().unwrap();
         let task = "WeChatOneBotLauncher-S-1-5-isolated";
         let expected = command(&verbatim, task).unwrap();
-        assert_eq!(expected, raw_command(&helper, task).unwrap());
+        // TEMP can use an 8.3 alias (RUNNER~1) on hosted Windows. Compare
+        // filesystem identity, since canonicalize expands that alias.
+        let normalized = expected.strip_prefix('"').unwrap().split_once('"').unwrap().0;
+        assert_eq!(Path::new(normalized).canonicalize().unwrap(), verbatim);
+        assert!(expected.ends_with(&format!("\"--task\" \"{task}\"")));
         assert!(!expected.contains(r"\\?\"));
         let legacy = raw_command(&verbatim, task).unwrap();
         assert_ne!(legacy, expected);
