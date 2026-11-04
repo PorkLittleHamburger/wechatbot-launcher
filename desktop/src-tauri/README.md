@@ -28,7 +28,8 @@ already staged runtime, the native build can also be invoked with
 
 Release embeds `windows/app.manifest` with `requireAdministrator`. Debug embeds
 `windows/debug.manifest` with `asInvoker`. Both are GUI-subsystem executables.
-The product is **WeChat OneBot Launcher 0.8.6**; the binary is
+The product version is defined in `tauri.conf.json` and must match the frontend,
+Cargo and Python launcher metadata. The binary is
 `wechat-onebot-launcher.exe`; the application identifier is
 `com.porklittlehamburger.wechat-onebot-launcher`.
 
@@ -54,8 +55,9 @@ fails startup rather than running an uncontained supervisor.
 
 Requests are `{id,method,params}`. A mutex serializes stdin writes, while a map of
 oneshot senders routes `{id,result}` / `{id,error:string}` responses by numeric ID.
-Readiness waits for `ready` for up to **180 seconds**, including initial version
-copying. Requests wait for readiness automatically. RPC responses have a 15-minute
+Readiness waits for `ready` for up to **180 seconds**, including interrupted-upgrade
+recovery and optional restoration of previously running instances. Fresh workspaces
+do not automatically import a runtime version. Requests wait for readiness automatically. RPC responses have a 15-minute
 deadline (version download/import can take time); a timeout does **not** imply
 the Python operation was cancelled. Requests and responses are capped at 1 MiB,
 with at most 256 pending requests.
@@ -81,6 +83,7 @@ invoke('open_instance', { instanceId: '<32 lowercase hex characters>' })
 invoke('reveal_workspace') // fixed workspace; accepts no arbitrary path
 invoke('change_workspace', { path: 'D:\\Data\\WeChatOneBot' }) // absolute path
 invoke('exit_app')
+invoke('install_launcher_update') // stopped instances and a verified installer required
 ```
 
 `open_instance` requests `instance_info` with `{id}` and requires a running row
@@ -89,7 +92,7 @@ with the same ID and a `http://127.0.0.1:<port>/...` URL. It opens/focuses
 This is a native-IPC boundary; it does not claim a lower Windows integrity level
 for WebView2 than the main app. A user can copy the URL into a normal browser.
 
-The main capability grants only the five custom commands, event listen/unlisten,
+The main capability grants only the six custom commands, event listen/unlisten,
 and `dialog:allow-open` for the frontend file chooser. Opener and window-state
 plugins are called from Rust without granting their JavaScript APIs.
 
@@ -118,11 +121,17 @@ workspace hash. An existing task must match this application's Source, user SID,
 and executable before replacement/deletion. No legacy service task is touched.
 Task changes preserve/restore prior task XML on failure; Python settings are
 rolled back if task configuration fails. Any rollback failure is reported too.
-Building never registers a task. Startup reconciles the explicitly saved setting
+Compilation does not register application autostart. Full builds also run isolated
+registry/task tests; elevated tests create and clean up test tasks, while a
+non-elevated runner exercises explicit permission-denial handling. Startup reconciles the explicitly saved setting
 after the supervisor is ready, under the same settings lock used by saves. This
 repairs the on-demand task and removes old logon triggers. A bundled console-free
 `startup/wechat-onebot-startup.exe` has an explicit `asInvoker` manifest; Windows
 starts it through HKCU Run, and it requests only the pre-authorized task.
+The complete Run command (helper path, `--task`, and task name) must contain fewer
+than 260 UTF-16 units and use an ordinary local drive path. Shorten the installation
+directory if registration exceeds this limit. Matching legacy verbatim commands
+are migrated without resetting an external disable.
 Task Manager's HKCU StartupApproved override is respected, including when saving
 other settings. A per-user/workspace migration marker distinguishes first setup
 from a deleted Run entry. Only an explicit autostart edit may reset the override.

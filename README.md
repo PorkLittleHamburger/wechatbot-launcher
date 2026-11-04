@@ -1,28 +1,33 @@
 # WeChat OneBot Launcher
 
-Windows x64 桌面启动器，用于管理个人微信 OneBot v11 网关的多个独立实例。桌面应用采用 Tauri 2、React/TypeScript 与 Python 管理服务，提供实例启停、版本选择、升级、备份恢复、日志、托盘、开机自启和可切换的数据目录。
+Windows x64 桌面启动器，用于管理个人微信 OneBot v11 网关的多个独立实例。使用 Tauri 2、React/TypeScript 和 Python 管理服务，提供实例启停、运行版本下载/导入、升级回滚、备份恢复、日志、托盘、自启和数据目录切换。
 
-从 0.8.3 起支持“设置 → 启动器更新”：检查正式新版、查看说明、下载并校验 Windows 安装器，再选择“自动更新并重启”。安装前须停止所有实例；0.8.5 起助手等待桌面退出后静默覆盖原安装目录并自动重启，保留工作空间。本体更新与“版本管理”中的网关升级分别操作。
+本仓库仅维护启动器。网关、微信桥接、原生组件和对应依赖锁位于独立的 [wechatbot 仓库](https://github.com/PorkLittleHamburger/wechatbot)，通过外部运行时源参与构建。浏览器管理入口已移除；实例 WebUI 在桌面子窗口中打开。
 
-本仓库只包含启动器工程。OneBot 网关、微信桥接和原生组件位于独立仓库 [PorkLittleHamburger/wechatbot](https://github.com/PorkLittleHamburger/wechatbot)，不在此仓库中重复提交。
+## 安装与使用
 
-## 目录
+从 [最新正式发布](https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/latest) 下载 `WeChat-OneBot-Launcher_<版本>_x64-setup.exe`。安装包包含后台 Python、依赖和离线前置组件，使用者无需安装开发工具。主要验收环境为 Windows 11 x64；其他 Windows 版本需单独验证。
 
-| 路径 | 用途 |
-| --- | --- |
-| `desktop/src` | React 页面、样式与桌面 API 调用 |
-| `desktop/src-tauri` | Rust 桌面壳、托盘、系统集成、进程管理和 NSIS 安装器 |
-| `python/wechat_onebot/launcher` | Python 实例、版本、升级、备份恢复与通信实现 |
-| `scripts` | 运行时组装、桌面构建、工具配置与隔离验收脚本 |
-| `tests` | 桌面后端、版本、通信、升级恢复及打包测试 |
-| `docs` | 使用、构建、设计和验收说明 |
+1. 安装并启动，按系统提示授予管理员权限。
+2. 新工作空间的版本列表为空；先在“版本管理”下载 Bot 运行版本或导入兼容 ZIP，再创建 Helper 实例。桌面不提供 Mock 模式选择。
+3. 启动实例并打开 WebUI。微信构建兼容性、账号登录和桥接操作以所选 Bot 版本的说明为准。
 
-## 开发环境
+默认数据目录为 `%LOCALAPPDATA%\WeChatOneBotLauncher`，与安装目录分离；可在设置中更改。切换目录不会自动迁移已有数据。关闭窗口默认隐藏到托盘，托盘“退出”会停止全部实例并退出。
 
-源码测试和安装器构建需要一个外部网关运行时源。将 `WECHAT_RUNTIME_SOURCE` 指向 `wechatbot` 仓库检出目录；脚本同时支持检出根目录和其中的 `bot/` 子目录。仓库不复制该运行时源。
+## 更新与自启
+
+“设置 → 启动器更新”更新桌面程序；“版本管理”独立读取 [Bot 发布页](https://github.com/PorkLittleHamburger/wechatbot/releases)，更新实例运行版本。两者分别操作；更新启动器不会自动安装 Bot 或切换现有实例版本。
+
+更新启动器前停止全部实例，再选择“自动更新并重启”。0.8.5 起内置助手静默覆盖原安装目录并携带原数据目录重启；更早版本首次升级仍可能显示安装向导。直接双击安装器按普通安装流程运行。
+
+自启默认关闭，启用后可在 Windows 任务管理器“启动应用”中管理。0.8.7 修复旧入口的 `\\?\` 路径兼容问题，并迁移匹配当前安装的旧命令；在 Windows 中禁用或删除入口的选择会保留。入口日志在 `%LOCALAPPDATA%\WeChatOneBotLauncherShell\startup.log`。注册成功不等于真实登录已验证，详细步骤见[桌面使用说明](docs/desktop-launcher.md)。
+
+## 开发
+
+从仓库根目录执行。示例假定网关检出在相邻 `wechatbot` 目录；其他布局请修改 `$runtime`。开发和完整构建需要 Python 3.13 x64，及[构建指南](docs/building.md)中的 Windows 工具链。
 
 ```powershell
-$runtime = 'D:\study\project\wechatbot'
+$runtime = (Resolve-Path ../wechatbot).Path
 if (Test-Path (Join-Path $runtime 'bot/requirements-runtime.lock')) {
     $runtime = Join-Path $runtime 'bot'
 }
@@ -31,30 +36,18 @@ python -m venv .venv
 .venv/Scripts/python.exe -m pip install -r (Join-Path $runtime 'requirements-runtime.lock')
 .venv/Scripts/python.exe -m pip install -e '.[dev]'
 .venv/Scripts/python.exe -m pytest -q tests
+pwsh -File scripts/build_desktop.ps1
 ```
 
-浏览器多实例管理入口已移除；实例管理全部由桌面应用提供，新建实例固定使用 Helper 微信桥接模式。桌面使用者应安装构建生成的 EXE，无需源码环境。版本发布只下载兼容运行时包，本仓库不包含网关源码或原生 DLL。
+构建会合并外部运行时、运行测试并生成 NSIS 安装器和运行包到 `dist/`。源码包含 `desktop/src/`（界面）、`desktop/src-tauri/`（原生壳）、`python/wechat_onebot/launcher/`（管理服务）、`scripts/`、`tests/` 和 `docs/`；生成资源与用户数据不提交。
 
-## 桌面工程
+## 文档导航
 
-React 前端通过 Tauri 命令调用 Rust 桌面壳。Rust 管理 Python 服务进程，通过标准输入/输出 JSON 行协议发送请求并接收响应及进度事件。实例 WebUI 使用独立子窗口，不授予桌面原生接口权限。
+- [桌面使用与故障排查](docs/desktop-launcher.md)
+- [工具链、构建与发布](docs/building.md)
+- [验收步骤与历史验证记录](docs/desktop-verification.md)
+- [原生壳架构和 IPC 契约](desktop/src-tauri/README.md)
+- [项目交接、开发沿革与待验证事项](docs/HANDOFF.md)（接手开发必读）
+- [贡献与 AI 工作要求](AGENTS.md)
 
-前端依赖使用 `desktop/package-lock.json`，Rust 依赖使用 `desktop/src-tauri/Cargo.lock`。生成的前端资源、内置运行时和编译输出不纳入 Git。
-
-桌面工作空间默认为 `%LOCALAPPDATA%\WeChatOneBotLauncher`，构建产物位于仓库根目录 `dist`。
-
-## 0.8.7 更新与升级
-
-0.8.7 修复 0.8.6 自启注册项可能包含 `\\?\` 资源路径的问题。自启入口统一使用普通本地路径；升级后启动器自动迁移精确匹配当前安装的旧入口，保留任务管理器中的禁用状态。入口启动及任务请求结果写入 `%LOCALAPPDATA%\WeChatOneBotLauncherShell\startup.log`。Windows 注册状态为“启用”不能替代实际注销登录验证。
-
-首次启动不再自动安装任何 Bot 运行版本，新工作空间的版本列表为空。请先在“版本管理”中下载或导入 ZIP，再创建实例。安装包保留启动器后台所需的 Python 和模块，但不会将它们自动导入 Bot 版本库；更新启动器也不会自动补装版本。
-
-保留此前的本地扩展路径兼容修复：启动器交接已验证等价的普通盘符路径，Bot 运行包兼容文件/语音的扩展本地路径；界面中的版本路径、数据目录和页脚显示可读形式。旧绝对数据路径的备份、恢复与升级回滚兼容保留，特殊目录名不会被有损改写。
-
-旧版用户可通过“设置 → 启动器更新”下载校验后自动更新到 0.8.7；更新前先停止所有实例。也可通过托盘退出后覆盖安装并保留数据目录。如需 Bot 修复，请单独下载或导入 Bot 0.8.6 运行包，停止实例后选择升级。不要手动覆盖旧版本目录；更新启动器不会自动切换实例版本或改写旧版本 ACL。
-
-更多资料：[桌面使用](docs/desktop-launcher.md)、[构建说明](docs/building.md)、[桌面壳与 IPC](desktop/src-tauri/README.md)、[验收指南](docs/desktop-verification.md)。
-
-任务管理器自启支持：启用后注册普通启动入口，由轻量程序请求按需高权限任务；可在 Windows“启动应用”中禁用或重新启用。在 Windows 中禁用/删除后，启动器不会按旧设置自动恢复，设置页显示实际状态。旧直接登录任务会迁移以避免绕过禁用。
-
-0.8.5 修复版本发布源：版本管理直接读取 [Bot 发布页](https://github.com/PorkLittleHamburger/wechatbot/releases)，下载 `wechat-onebot-<版本>-windows-x64.zip`；启动器本体更新仍读取 Launcher 发布页。Bot 发布新版本无需等待启动器重新发布。0.8.4 及更早启动器可先通过“启动器更新”升级，也可手动导入 Bot ZIP，再停止实例并升级。
+发布记录描述对应版本的验证范围，不代表所有机器均已验证。安装器目前未配置代码签名；下载校验依赖 GitHub HTTPS 发布的 SHA-256 文件。

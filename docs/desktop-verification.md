@@ -13,7 +13,7 @@
 按 [构建说明](building.md) 配置外部运行时和 Python 环境后，在仓库根目录执行：
 
 ```powershell
-$env:WECHAT_RUNTIME_SOURCE = 'D:\study\project\wechatbot'
+$env:WECHAT_RUNTIME_SOURCE = (Resolve-Path ../wechatbot).Path
 .venv/Scripts/python.exe -m pytest -q tests
 pwsh -File scripts/build_desktop.ps1
 ```
@@ -29,16 +29,16 @@ pwsh -File scripts/build_desktop.ps1
 | 文件边界 | 损坏、越界、链接及不合法归档拒绝导入或恢复 |
 | 进程通信 | 请求 ID 匹配、进度事件、异常响应、正常退出和进程回收 |
 | 数据目录 | 显示当前目录，支持打开和切换；运行中实例阻止切换，偏好保存后自动重启生效 |
-| 版本列表 | Bot 版本使用 Bot 发布页 Atom 源及便携 ZIP 名称，启动器更新使用独立 Launcher 源；拒绝混入其他仓库链接，不触发 GitHub REST API 限流 |
+| 版本列表 | Bot 版本使用 Bot 发布页 Atom 源及便携 ZIP 名称，启动器更新使用独立 Launcher 源；拒绝混入其他仓库链接，避免依赖 GitHub REST API 配额；HTTP 页面与附件仍可能受网络或服务端限流影响 |
 | 守护入口 | 新建和缓存 Python 均执行 watchdog `--help`；导入失败阻止导出，并保留检查退出码和标准错误 |
 
 版本测试使用本地构造的不同测试版本即可，无需发布 GitHub Release。自动化测试使用 Mock；桌面界面新建实例固定为 Helper，原生微信桥接单独验证。
 
-## 0.8.7 自动化验证
+## 已发布基线：0.8.7（2026-11-04）
 
 包含自启入口路径修复、旧入口迁移和执行日志。普通本地路径与带 `\\?\` 的资源路径使用同一隔离文件做对照；Run 命令迁移及回滚保留任务管理器禁用标记。管理员权限下的两个隔离计划任务回归通过；普通权限入口成功请求高权限测试程序。未注销登录或启动真实 Bot，不能据此宣称实际开机自启已验证恢复。
 
-完整构建继续固定使用 Bot `v0.8.6` 提交 `23f46eb2d2b4c30c6f4cdf7c3098fb5c915e583f`。最终测试数量、Windows CI 和安装包/运行包校验值随 Release 记录。
+该发布的完整构建固定使用 Bot `v0.8.6` 提交 `23f46eb2d2b4c30c6f4cdf7c3098fb5c915e583f`。123 项 Python、10 项 Rust 单元和 5 项集成测试通过；[Windows CI 41754065459](https://github.com/PorkLittleHamburger/wechatbot-launcher/actions/runs/41754065459) 成功。附件校验值见 [v0.8.7 Release](https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/tag/v0.8.7)。旧版更新模块已实际下载校验新安装器。以下历史记录仅适用于对应版本，不表示本次文档整理重新执行了构建。
 
 ## 0.8.6 历史自动化验证
 
@@ -104,7 +104,7 @@ pwsh -File scripts/test_installer_sandbox.ps1
 2. 从快捷方式打开独立窗口，出现预期 UAC 提示，不显示控制台或打开外部浏览器。
 3. 重复启动唤起原窗口，窗口尺寸和位置可恢复；关闭默认进入托盘，切换关闭行为后符合设置。
 4. 托盘退出正常停止实例。测试专用进程异常结束后，所属管理服务和实例进程也结束，监听端口释放。
-5. 两个 Mock 实例同时运行，停止其中一个不影响另一个；实例 WebUI 在独立子窗口中打开。
+5. 在隔离环境创建两个专用测试实例，停止其中一个不影响另一个，核对独立子窗口。桌面固定创建 Helper 实例，不提供 Mock 入口；无微信的 Mock 生命周期验证使用 pytest 夹具完成，不能要求在界面选择 Mock。
 6. 启用和关闭开机自启，实际注销并登录验证任务；检查隐藏启动和恢复实例设置，按已保存配置核对恢复结果与网关日志。
 7. 程序运行时覆盖安装要求先正常退出，覆盖升级保留工作空间；卸载默认保留数据，明确选择删除时才清理。
 8. 验证离线版本、下载失败重试、导入错误、升级回滚和备份恢复的界面提示及操作结果。

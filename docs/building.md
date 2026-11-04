@@ -16,7 +16,7 @@
 
 ## 配置工具目录
 
-`scripts/desktop_env.ps1` 为构建进程配置工具目录和缓存，当前脚本带有预设目录。首次在其他构建机器使用时，先根据实际安装位置调整这些设置：
+`scripts/desktop_env.ps1` 为构建进程配置工具目录和缓存。脚本仍有开发机目录探测：存在预设的 D 盘工具目录时可能选用它们，否则构建/缓存目录回退到仓库 `build/`。这些目录不是项目要求。其他机器应预先显式配置下列变量，并检查 `Get-Command python,node,npm.cmd,cargo,link.exe,rc.exe` 的解析结果；脚本还会优先加入存在的 `D:\nodejs`，存在该目录时需检查 Node 是否符合预期。
 
 | 设置 | 用途 |
 | --- | --- |
@@ -30,10 +30,22 @@
 
 `scripts/setup_portable_msvc.ps1` 是可选的微软工具负载提取脚本，支持 `InstallRoot`、`CacheRoot`、`BuildRoot`、`RustRoot` 和 `Proxy` 参数。它生成的 `msvc-env.ps1` 应放在构建脚本实际使用的 `WECHAT_BUILD_ROOT` 下。
 
-## 准备 Python 环境
+该脚本的默认目录和代理来自原开发环境，不能作为通用配置。请传入自己的目录；无需代理时明确传入 `-Proxy ''`。常规 Visual Studio Build Tools 用户可在已加载 MSVC 环境的 PowerShell 中构建，无需运行该可选脚本。
+
+例如在仓库根目录显式指定输出位置（工具链路径另按本机安装配置）：
 
 ```powershell
-$runtime = 'D:\study\project\wechatbot'
+$env:WECHAT_BUILD_ROOT = Join-Path $PWD 'build'
+$env:WECHAT_BUILD_CACHE = Join-Path $PWD 'build/cache'
+$env:CARGO_TARGET_DIR = Join-Path $PWD 'build/cargo-target'
+```
+
+## 准备 Python 环境
+
+示例假定 Bot 仓库检出在相邻 `wechatbot` 目录；其他布局请替换 `$runtime` 为实际路径。
+
+```powershell
+$runtime = (Resolve-Path ../wechatbot).Path
 if (Test-Path (Join-Path $runtime 'bot/requirements-runtime.lock')) {
     $runtime = Join-Path $runtime 'bot'
 }
@@ -48,7 +60,7 @@ python -m venv .venv
 ## 生成 EXE
 
 ```powershell
-$env:WECHAT_RUNTIME_SOURCE = 'D:\study\project\wechatbot'
+$env:WECHAT_RUNTIME_SOURCE = (Resolve-Path ../wechatbot).Path
 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build_desktop.ps1
 ```
 
@@ -77,3 +89,15 @@ Get-ChildItem dist/*setup.exe | Get-FileHash -Algorithm SHA256
 [Windows CI](../.github/workflows/desktop.yml) 会检出启动器和 `wechatbot` 运行时源，执行同一构建入口并保存安装器、SHA-256 与运行时 ZIP。构建流程不自动创建 GitHub Release。
 
 构建成功仅说明编译及自动化检查通过。分发前还应按 [验收指南](desktop-verification.md) 在隔离 Windows 环境检查安装、覆盖升级、卸载、自启和数据保留。
+
+## 人工发布检查
+
+仅在用户明确要求发布时执行；普通代码或文档推送不创建 Release。
+
+1. 对齐 `pyproject.toml`、两个 Python `__init__.py`、前端 package/lock、Cargo package/lock、Tauri 配置、Windows 清单和构建/验收脚本中的版本与文件名；核对 README、使用说明及 [交接文档](HANDOFF.md)。
+2. 核实外部 Bot 源码 HEAD、工作树及 CI 固定提交。`WECHAT_PYTHON_RUNTIME` 可指向与外部依赖锁完全匹配的解释器及依赖目录，只复用 Python，不跳过源码重新组装。完整发布不得使用 `-SkipTests` 或 `-SkipRuntime`。
+3. 完成完整构建和必要的隔离验收。发布前另为运行包 ZIP 生成 `.zip.sha256`；当前构建脚本只自动写安装器 `.exe.sha256`。校验文件内容为 `<小写 SHA-256>  <文件名>`。
+4. 将验证后的源码推送，确认该提交的 Windows CI 成功；记录尚未完成的手动验证。创建指向该提交的版本标签，上传安装器、运行包及两份校验文件，核对服务端大小/哈希。
+5. 正式发布后核对标签提交、非草稿/非预发布和 Latest 状态，重新下载校验附件，并以旧版更新模块检查能否发现新版。不要以 Git 推送或本地构建成功代替远端验证。
+
+`wechat-onebot-runtime-<启动器版本>-windows-x64.zip` 是启动器组装的兼容运行包，不表示独立 Bot 已发布同号版本。Bot 官方便携包名为 `wechat-onebot-<Bot版本>-windows-x64.zip`，由 Bot 仓库发布。

@@ -2,6 +2,12 @@
 
 This repository contains only the desktop WeChat OneBot Launcher. The gateway and native bridge live in the separate `PorkLittleHamburger/wechatbot` repository and are supplied through `WECHAT_RUNTIME_SOURCE`; do not copy gateway source, native DLLs, or gateway tests into this repository. Browser-based launcher management is intentionally not part of this project.
 
+## Required Handoff & Documentation Maintenance
+
+Every AI taking over this project must read [docs/HANDOFF.md](docs/HANDOFF.md) before editing, then inspect the referenced code and current Git/Release state. Historical validation is not proof of current behavior or deployment.
+
+On takeover and during documentation audits, inventory all project documents accumulated since development began. For every update, review affected documentation against the final code, including the remote repository README. Correct stale versions, defaults, commands, removed features, and machine-specific assumptions. Use portable examples; do not publish personal paths, account details, proxy settings, or credentials as general requirements. Maintain the handoff with architecture, decisions, evidence, limitations, and outstanding work; create it if absent. Separate current instructions from historical records and label unverified checks. Verify links and examples before pushing, then confirm the remote README matches the committed file. Push verified updates; publish a Release only on explicit user request.
+
 ## Project Structure & Module Organization
 
 - `desktop/src/`: React/TypeScript UI, API bindings, types, and styles.
@@ -18,7 +24,7 @@ Generated paths such as `dist/`, `desktop/dist/`, `desktop/src-tauri/target/`, `
 Set `WECHAT_RUNTIME_SOURCE` to a checkout of `PorkLittleHamburger/wechatbot` before running development or build commands.
 
 ```powershell
-$env:WECHAT_RUNTIME_SOURCE = 'D:\study\project\wechatbot'
+$env:WECHAT_RUNTIME_SOURCE = (Resolve-Path ../wechatbot).Path
 .venv/Scripts/python.exe -m pytest -q tests
 pwsh -File scripts/build_desktop.ps1
 cd desktop
