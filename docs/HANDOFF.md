@@ -6,8 +6,8 @@
 
 - 仓库为 `PorkLittleHamburger/wechatbot-launcher`，只维护桌面启动器。旧对话中的共享仓库或 `WechatBot/launcher` 路径已不适合作为定位依据；先用 `git rev-parse --show-toplevel` 确认。
 - 网关、微信桥接、原生 DLL 及对应测试位于独立 `PorkLittleHamburger/wechatbot` 仓库，通过 `WECHAT_RUNTIME_SOURCE` 参与构建，不复制到启动器源码库。
-- 当前发布线：[v0.8.8](https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/tag/v0.8.8)，源码以该标签指向的提交为准；正式发布状态以 GitHub Latest 为准，后续文档提交不改写发布标签。
-- 该发布使用 Bot v0.8.6 源码 `23f46eb2d2b4c30c6f4cdf7c3098fb5c915e583f`。当前未发布源码的 [CI](../.github/workflows/desktop.yml) 改为固定 Bot `b908d4c69447a429263d8b1c03018c7d8d16fe27`（0.9.3 恢复协议 v1）；本地构建不会自动检出或核对提交，发布前须检查运行时源 HEAD 与工作树。
+- 当前发布线：[v0.8.9](https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/tag/v0.8.9)，源码以该标签指向的提交为准；正式发布状态以 GitHub Latest 为准，后续文档提交不改写发布标签。
+- [CI](../.github/workflows/desktop.yml) 固定 Bot v0.9.3 源码 `0af6c8098533e17898e0fcbd2824392e9738f20d`（恢复协议 v1）；功能基线为 `b908d4c`，后续仅同步发布说明。本地构建不会自动检出或核对提交，发布前须检查运行时源 HEAD 与工作树。v0.8.8 的历史运行时为 Bot v0.8.6 `23f46eb`。
 - 源码 HEAD、正式发布和实际安装是三种状态，必须分别确认。更新验证后提交推送；只有用户明确要求时才发布新 Release。
 
 ## 接手顺序与文档分工
@@ -63,6 +63,7 @@
 | 0.8.6 | 自启修复、任务管理器入口；通过 COM/UTF-8 读取任务 XML，避免中文路径损坏 |
 | 0.8.7 | Run 路径修复、旧命令迁移、保留禁用选择、入口日志；测试兼容 8.3 临时目录别名 |
 | 0.8.8 | 资源锁与原子创建修复、目录故障隔离、模块拆分、操作批次反馈与自启事务协调 |
+| 0.8.9 | 显式请求桥接恢复、等待登录与停止意图状态展示、旧 worker 能力提示；修复升级意图继承与并发状态倒序覆盖 |
 
 ## 0.8.8 修复与反馈
 
@@ -72,15 +73,17 @@
 
 ## 验证证据与剩余事项
 
-### 未发布：显式桥接恢复
+### 0.8.9：显式桥接恢复
 
-v0.8.8 已发布，但不包含本节源码改动。根因是旧 worker 固定 `start_runtime=False`，恢复实例从未请求 Bot 恢复桥接。新增 `restore_bridges=false`，只有 Shell `--autostart`、`autostart`、`restore_instances` 和该开关同时满足时，对 `running.json` 中的实例传 `--resume-bridge`。普通启动、重启和升级检查均不请求。
+v0.8.9 包含本节改动，v0.8.8 及更早版本不包含。根因是旧 worker 固定 `start_runtime=False`，恢复实例从未请求 Bot 恢复桥接。新增 `restore_bridges=false`，只有 Shell `--autostart`、`autostart`、`restore_instances` 和该开关同时满足时，对 `running.json` 中的实例传 `--resume-bridge`。普通启动、重启和升级检查均不请求。
 
 Rust 将自启标志传给 supervisor，`DesktopManager.initialize` 选择意图；`worker.py` 按 Bot 的 `RESUME_CAPABILITY_VERSION=1` 启用 `create_webui_app(start_runtime=True)`。Bot 唯一拥有等待登录和停止取消；Launcher 不另建账号扫描或注入重试。认证健康端点提供 `bridgeResume`，`bridge_status.py` 校验一次协议，快照刷新后显示 `disabled/no_target/waiting_login/starting/stopping/running/stopped/failed/unsupported`。管理服务启动成功与桥接恢复结果分开；旧能力缺失保留管理入口并给升级建议，状态读取失败不能当作成功。
 
-兼容性边界：实例使用所选版本内的 worker，更新 Launcher 不更新已安装的版本文件。需在新 Launcher 导入支持控制器的新 Bot 便携版本并切换实例；不能仅追加一个会被旧 worker 忽略的参数就宣称已恢复。旧 Bot 支持管理服务模式。本轮只做隔离 Mock 验证，不改真实配置、任务或运行实例，不执行微信注入、发送或 Release。
+兼容性边界：实例使用所选版本内的 worker，更新 Launcher 不更新已安装的版本文件。需在新 Launcher 下载或导入 Bot v0.9.3 或支持同一协议的新便携版本并切换实例；不能仅追加一个会被旧 worker 忽略的参数就宣称已恢复。旧 Bot 支持管理服务模式。本轮按用户明确请求发布配套版本，只做隔离验证，不改真实配置、任务或运行实例，不执行微信注入或发送。
 
 验证：新 Bot 源码 183 项 Python 通过；旧 Bot v0.8.6 为 178 通过、5 项新能力用例跳过；前端 33 项通过；Rust 主程序 21 项、进程目标 6 项通过，两项 opt-in 未执行。真实临时导入 ZIP 与嵌入 Python 验证三种恢复状态通过；独立 CR 的异常退出升级意图继承及旧轮询覆盖新状态两项已修复并复审通过。完整说明见[验收指南](desktop-verification.md)。
+
+功能提交 `609390c` 的 [Windows CI 41819056040](https://github.com/PorkLittleHamburger/wechatbot-launcher/actions/runs/41819056040) 完整成功，含 183 项 Python、33 项前端、22 项 Rust 主程序和 7 项进程目标测试及离线安装器构建。0.8.9 发布元数据提交需另行通过完整 CI，并核对标签、附件摘要、重新下载与 Latest 状态；发布记录以 [Release](https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/tag/v0.8.9) 为准。
 
 v0.8.7 的 [Windows CI 41754065459](https://github.com/PorkLittleHamburger/wechatbot-launcher/actions/runs/41754065459) 成功：123 项 Python、10 项 Rust 单元、5 项集成测试通过。另有管理员权限的两个隔离任务回归、普通权限入口请求独立高权限程序的验证。安装器解包通过，1,395 个运行时文件哈希匹配，新工作空间不自动装 Bot，手动导入通过；旧版 0.8.6 更新模块已从正式发布源发现、下载并校验新版。
 

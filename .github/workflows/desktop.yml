@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: PorkLittleHamburger/wechatbot
-          ref: b908d4c69447a429263d8b1c03018c7d8d16fe27 # Bot 0.9.3 resume capability v1 (unreleased)
+          ref: 0af6c8098533e17898e0fcbd2824392e9738f20d # Bot v0.9.3 resume capability v1
           path: runtime-source
       - uses: actions/setup-python@v5
         with:

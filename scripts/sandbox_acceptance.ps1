@@ -5,7 +5,7 @@ if ($env:USERNAME -ne 'WDAGUtilityAccount' -or -not (Test-Path 'C:/HostArtifacts
 }
 Start-Transcript -LiteralPath 'C:/AcceptanceResults/install.log' -Force
 try {
-    $source = 'C:/HostArtifacts/WeChat-OneBot-Launcher_0.8.8_x64-setup.exe'
+    $source = 'C:/HostArtifacts/WeChat-OneBot-Launcher_0.8.9_x64-setup.exe'
     $installer = 'C:/Windows/Temp/WeChat-OneBot-setup.exe'
     Copy-Item -LiteralPath $source -Destination $installer
     $install = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru

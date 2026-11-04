@@ -3,7 +3,7 @@
 The Windows shell lives here. React/Vite is in `desktop/src`, Python management
 is in `python/wechat_onebot/launcher`, and staging/build scripts are in `scripts`.
 
-Unreleased bridge restoration forwards the shell's `--autostart` through `Ipc`
+Bridge restoration in 0.8.9 forwards the shell's `--autostart` through `Ipc`
 and `Process` to the supervisor. Manual launches omit it. Only remembered
 instances with `autostart`, `restore_instances`, and `restore_bridges` enabled
 receive worker `--resume-bridge`. The worker enables the gateway's version-1
