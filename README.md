@@ -41,7 +41,7 @@ pwsh -File scripts/build_desktop.ps1
 
 构建会合并外部运行时、运行测试并生成 NSIS 安装器和运行包到 `dist/`。源码包含 `desktop/src/`（界面）、`desktop/src-tauri/`（原生壳）、`python/wechat_onebot/launcher/`（管理服务）、`scripts/`、`tests/` 和 `docs/`；生成资源与用户数据不提交。
 
-当前开发源码另包含 CR 修复和操作反馈改进，尚未发布新安装包；详见[修复状态](docs/CODE_REVIEW.md)和[开发反馈说明](docs/desktop-launcher.md#开发代码新增反馈尚未发布)。
+0.8.8 包含 CR 修复、模块拆分和操作反馈改进；详见[修复状态](docs/CODE_REVIEW.md)和[操作反馈说明](docs/desktop-launcher.md#088-操作反馈与故障隔离)。
 
 ## 文档导航
 
