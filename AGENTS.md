@@ -40,6 +40,12 @@ Use four spaces in Python and Rust and two in TypeScript. Follow existing Python
 
 Tests are named `test_<behavior>`, must be deterministic, use `tmp_path`, and must never inject into WeChat or send real messages.
 
+## Code Review & Modular Engineering
+
+Review changes for unnecessary fallbacks, null checks, duplicate validation, broad exception handling, silent defaults, and excessive coupling. Validate external input once at a clear boundary and use explicit internal contracts; reject malformed required data rather than converting it into empty values or success. Keep compatibility fallbacks only for a supported, documented case. Preserve justified filesystem/process cleanup, cancellation handling, path identity checks, and concurrency guards.
+
+Keep UI presentation, transport DTOs, application operations, persistence, runtime packaging, and Windows integration in modules with explicit interfaces and one clear owner for state, locks, errors, and rollback. Avoid cross-domain private helper calls and inheritance that splits one transaction across partially committed steps. Lock the resource being changed; unrelated downloads must not block lifecycle commands. Extract cohesive modules when responsibilities diverge, without speculative layers or generic abstractions. Reviewers must distinguish reproducible defects from maintainability suggestions, cite triggers and code evidence, and verify failure paths before recommending removal of a guard. Record unresolved findings in the handoff and update affected documentation. A review request alone does not authorize a broad refactor or release.
+
 ## Commit & Pull Request Guidelines
 
 Use concise, imperative subjects with `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, or `chore:` prefixes. Pull requests should explain behavior changes, verify commands, linked issues, and UI screenshots when applicable. Never commit credentials, workspace data, generated runtimes, or installer artifacts. Push verified changes; create a GitHub Release only after explicit approval.
