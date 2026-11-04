@@ -15,7 +15,7 @@ fn packaged_supervisor_json_lines_and_graceful_exit() {
     let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let root = build.join(format!("shell-job-smoke-{}-{nonce}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
-    let (process, mut stdin, stdout) = windows::Process::spawn(&runtime.join("python/python.exe"), &runtime, &root).unwrap();
+    let (process, mut stdin, stdout) = windows::Process::spawn(&runtime.join("python/python.exe"), &runtime, &root, false).unwrap();
     let (tx, rx) = mpsc::channel();
     let reader = std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {

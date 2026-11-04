@@ -28,10 +28,10 @@ impl Drop for Registration {
 }
 
 impl Ipc {
-    pub fn spawn(app: tauri::AppHandle, project: &Path, root: &Path) -> Result<Arc<Self>, String> {
+    pub fn spawn(app: tauri::AppHandle, project: &Path, root: &Path, autostart: bool) -> Result<Arc<Self>, String> {
         let python = project.join("python/python.exe");
         if !python.is_file() { return Err(format!("Bundled Python missing: {}", python.display())); }
-        let (process, stdin, stdout) = crate::windows::Process::spawn(&python, project, root).map_err(|e| format!("Start supervisor: {e}"))?;
+        let (process, stdin, stdout) = crate::windows::Process::spawn(&python, project, root, autostart).map_err(|e| format!("Start supervisor: {e}"))?;
         let (status, _) = watch::channel(Status::Starting);
         let ipc = Arc::new(Self {
             writer: AsyncMutex::new(Some(tokio::fs::File::from_std(stdin))),

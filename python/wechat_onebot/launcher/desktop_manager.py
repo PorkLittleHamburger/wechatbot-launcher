@@ -18,9 +18,10 @@ from .async_utils import run_blocking
 from .catalog import CatalogReader, collect_snapshot
 from .instance_storage import bind_runtime
 from .self_update import LauncherUpdater
+from .bridge_status import read_bridge_status
 
 DEFAULT_SETTINGS = {"close_to_tray": True, "autostart": False,
-                    "autostart_hidden": False, "restore_instances": False}
+                    "autostart_hidden": False, "restore_instances": False, "restore_bridges": False}
 
 
 class DesktopManager(LauncherManager):
@@ -51,7 +52,7 @@ class DesktopManager(LauncherManager):
         _atomic_write_json(self.root / "settings.json", updated)
         return updated
 
-    async def initialize(self):
+    async def initialize(self, *, autostart: bool = False):
         for row in self.rows():
             journal = self.directory(row["id"]) / "upgrade.json"
             if journal.exists():
@@ -68,10 +69,11 @@ class DesktopManager(LauncherManager):
                 await run_blocking(self.restorer.rollback, row["id"], self.restorer.backup_path(state["backup"]))
         saved = self.root / "running.json"
         ids = json.loads(saved.read_text(encoding="utf-8")).get("instances", []) if saved.exists() else []
-        if self.settings()["restore_instances"]:
+        settings = self.settings()
+        if settings["restore_instances"]:
             for instance_id in ids:
                 try:
-                    await self.start(instance_id)
+                    await self.start(instance_id, resume_bridge=autostart and settings["autostart"] and settings["restore_bridges"])
                 except Exception as error:
                     self.slots.setdefault(instance_id, ProcessSlot()).error = str(error)
 
@@ -86,8 +88,8 @@ class DesktopManager(LauncherManager):
             _atomic_write_json(self.root / "running.json", {
                 "instances": [r["id"] for r in self.rows() if r["state"] == "running"]})
 
-    async def start(self, instance_id: str):
-        await super().start(instance_id)
+    async def start(self, instance_id: str, *, resume_bridge: bool = False):
+        await super().start(instance_id, resume_bridge=resume_bridge)
         self._remember_running()
 
     async def stop(self, instance_id: str):
@@ -117,15 +119,26 @@ class DesktopManager(LauncherManager):
         project = self.versions.resolve(self.metadata(instance_id)["version"])
         return str(project / "python" / "python.exe"), project
 
-    async def _start_locked(self, instance_id: str, slot: ProcessSlot):
-        await super()._start_locked(instance_id, slot)
+    async def _start_locked(self, instance_id: str, slot: ProcessSlot, *, resume_bridge: bool = False):
+        await super()._start_locked(instance_id, slot, resume_bridge=resume_bridge)
         try:
             port = self.metadata(instance_id)["port"]
             async with httpx.AsyncClient(trust_env=False, timeout=5) as client:
                 health = await client.get(f"http://127.0.0.1:{port}/healthz")
                 health.raise_for_status()
                 status = health.json()
-                if not status.get("ok") or status.get("lastError"):
+                # Bridge recovery failure does not make the management UI unhealthy.
+                if status.get("lastError") and slot.resume_requested:
+                    current = await client.get(f"http://127.0.0.1:{port}/_launcher/health",
+                                               headers={"X-Launcher-Probe": slot.probe})
+                    current.raise_for_status()
+                    current_health = current.json()
+                    if not isinstance(current_health, dict) or current_health.get("identity") != slot.probe:
+                        raise ConfigError("管理服务身份校验失败")
+                    slot.bridge_resume = read_bridge_status(current_health, True)
+                bridge_failed = (slot.bridge_resume is not None and slot.bridge_resume["state"] == "failed"
+                                 and slot.bridge_resume["error"] == status.get("lastError"))
+                if not status.get("ok") or status.get("lastError") and not bridge_failed:
                     raise ConfigError(f"管理服务启动检查失败: {status.get('lastError') or '服务未就绪'}")
         except BaseException as error:
             await self._stop(slot)
@@ -212,6 +225,28 @@ class DesktopManager(LauncherManager):
                 await run_blocking(self.restorer.rollback, instance_id, self.restorer.backup_path(backup))
                 slot.state, slot.error = "stopped", f"升级失败，已回滚: {error}"
                 raise ConfigError(slot.error) from error
+
+    async def refresh_bridge_status(self):
+        async def refresh(instance_id, slot):
+            process, probe = slot.process, slot.probe
+            slot.bridge_poll += 1
+            poll = slot.bridge_poll
+            try:
+                port = self.metadata(instance_id)["port"]
+                async with httpx.AsyncClient(trust_env=False, timeout=0.8) as client:
+                    response = await client.get(f"http://127.0.0.1:{port}/_launcher/health",
+                                                headers={"X-Launcher-Probe": probe})
+                    response.raise_for_status()
+                    health = response.json()
+                    if not isinstance(health, dict) or health.get("identity") != probe:
+                        raise ConfigError("管理服务身份校验失败")
+                    status = read_bridge_status(health, slot.resume_requested)
+            except (httpx.HTTPError, ValueError, OSError, ConfigError) as error:
+                status = {**slot.bridge_resume, "state": "failed", "error": f"无法读取桥接状态：{error}"} if slot.bridge_resume else None
+            if slot.process is process and slot.probe == probe and slot.state == "running" and slot.bridge_poll == poll:
+                slot.bridge_resume = status
+        await asyncio.gather(*(refresh(key, slot) for key, slot in self.slots.items()
+                               if slot.state == "running" and slot.process is not None))
 
     def snapshot(self):
         sections, diagnostics = collect_snapshot({

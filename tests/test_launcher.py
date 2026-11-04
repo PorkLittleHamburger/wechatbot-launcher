@@ -80,7 +80,8 @@ async def test_two_real_mock_workers_are_healthy_and_isolated(manager):
             for child, slot, other_slot in ((a, slots[0], slots[1]), (b, slots[1], slots[0])):
                 health = await child.get("/_launcher/health", headers={"X-Launcher-Probe": slot.probe})
                 assert health.status_code == 200
-                assert health.json() == {"identity": slot.probe}
+                assert health.json()["identity"] == slot.probe
+                assert health.json()["bridgeResume"]["enabled"] is False
                 assert (await child.get("/healthz")).json()["ok"] is True
                 assert (await child.get("/_launcher/health")).status_code == 404
                 assert (await child.get("/_launcher/health", headers={

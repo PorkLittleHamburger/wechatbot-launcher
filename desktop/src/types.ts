@@ -1,12 +1,17 @@
+export interface BridgeResume {
+  supported: boolean; version: number | null; enabled: boolean; account: string | null;
+  desired: string; state: string; error: string | null;
+}
 export interface Instance {
   id: string; name: string; mode: 'mock' | 'helper'; port: number; state: string;
   pid: number | null; error: string; url: string; version: string;
+  bridge_resume?: BridgeResume;
 }
 export interface InstalledVersion { version: string; path: string; [key: string]: unknown }
 export interface Backup { invalid?: boolean; error?: string; name: string; size: number; instance_name: string; version: string }
 export interface Archive { invalid?: boolean; error?: string; id: string; name: string; version: string; archive_name: string }
 export interface Settings {
-  close_to_tray: boolean; autostart: boolean; autostart_hidden: boolean; restore_instances: boolean;
+  close_to_tray: boolean; autostart: boolean; autostart_hidden: boolean; restore_instances: boolean; restore_bridges: boolean;
 }
 export interface Snapshot {
   instances: Instance[]; versions: InstalledVersion[]; backups: Backup[]; archives: Archive[];

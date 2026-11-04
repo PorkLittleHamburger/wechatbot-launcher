@@ -506,7 +506,8 @@ async def test_two_real_desktop_mock_workers_use_separate_version_projects(deskt
                 url = f"http://127.0.0.1:{row['port']}"
                 health = await browser.get(f"{url}/_launcher/health", headers={"X-Launcher-Probe": slot.probe})
                 assert health.status_code == 200
-                assert health.json() == {"identity": slot.probe}
+                assert health.json()["identity"] == slot.probe
+                assert health.json()["bridgeResume"]["enabled"] is False
                 assert (await browser.post(f"{url}/api/login", json={"token": config.webui.access_token})).status_code == 200
                 assert (await browser.post(f"{url}/api/setup-password", json={"password": "offline version password"})).status_code == 200
                 status = await browser.get(f"{url}/api/status")
@@ -521,6 +522,66 @@ async def test_two_real_desktop_mock_workers_use_separate_version_projects(deskt
     finally:
         await desktop.close()
     assert all(p.poll() is not None for p in processes)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("desired,expected", [("running", "running"), ("stopped", "stopped"), (None, "no_target")])
+async def test_new_gateway_resume_contract_in_real_mock_worker(desktop, desired, expected):
+    if not (PROJECT / "src/wechat_onebot/webui/bridge_resume.py").is_file():
+        pytest.skip("Run against a gateway source implementing resume capability v1")
+    row = await desktop.create("Offline bridge resume", "mock", free_port())
+    config = AppConfig.load(desktop.directory(row["id"]) / "config.json")
+    if desired is not None:
+        config.storage.data_dir.mkdir(parents=True, exist_ok=True)
+        (config.storage.data_dir / "startup.json").write_text(
+            json.dumps({"last_account": "offline-resume", "desired": desired}), encoding="utf-8")
+    await desktop.start(row["id"], resume_bridge=True)
+    slot = desktop.slots[row["id"]]
+    for _ in range(50):
+        await desktop.refresh_bridge_status()
+        if slot.bridge_resume["state"] == expected:
+            break
+        await asyncio.sleep(0.1)
+    assert slot.state == "running"
+    assert slot.bridge_resume["state"] == expected
+    assert "--resume-bridge" in slot.process.args
+    if desired == "running":
+        async with httpx.AsyncClient(trust_env=False, timeout=5) as client:
+            url = f"http://127.0.0.1:{row['port']}"
+            login = await client.post(f"{url}/api/login", json={"token": config.webui.access_token})
+            assert login.status_code == 200
+            setup = await client.post(f"{url}/api/setup-password", json={"password": "offline resume test password"})
+            assert setup.status_code == 200
+            response = await client.post(f"{url}/api/accounts/offline-resume/stop")
+            assert response.status_code == 200, response.text
+        await desktop.refresh_bridge_status()
+        assert slot.bridge_resume["state"] == "stopped"
+        saved = json.loads((config.storage.data_dir / "startup.json").read_text(encoding="utf-8"))
+        assert saved["desired"] == "stopped"
+    await desktop.restart(row["id"])
+    assert "--resume-bridge" not in desktop.slots[row["id"]].process.args
+    assert desktop.slots[row["id"]].bridge_resume["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_crashed_resume_worker_upgrade_does_not_request_bridge(desktop, bundle_factory, tmp_path, monkeypatch):
+    from wechat_onebot.launcher import manager as module
+    row = await desktop.create("Crashed mock resume", "mock", free_port())
+    await desktop.start(row["id"], resume_bridge=True)
+    slot = desktop.slots[row["id"]]
+    slot.process.kill()
+    await asyncio.to_thread(slot.process.wait, timeout=5)
+    assert desktop.rows()[0]["state"] == "error"
+    assert slot.resume_requested is False
+    await add_version(desktop, bundle_factory, tmp_path)
+    commands = []
+    popen = module.subprocess.Popen
+    def record(command, **kwargs):
+        commands.append(command)
+        return popen(command, **kwargs)
+    monkeypatch.setattr(module.subprocess, "Popen", record)
+    await desktop.upgrade(row["id"], "0.9.0")
+    assert commands and all("--resume-bridge" not in command for command in commands)
 
 
 def seed_instance(manager, row):

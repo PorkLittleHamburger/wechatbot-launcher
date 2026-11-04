@@ -30,6 +30,7 @@ class Dispatcher:
         manager = self.manager
         instance_id = params.get("id")
         if method == "snapshot":
+            await manager.refresh_bridge_status()
             return manager.snapshot()
         if method == "settings_get":
             return manager.settings()
@@ -75,7 +76,7 @@ class Dispatcher:
         return result
 
 
-async def serve(root: Path, project: Path):
+async def serve(root: Path, project: Path, *, autostart: bool = False):
     output = sys.stdout
     sys.stdout = sys.stderr
     def emit(value):
@@ -95,7 +96,7 @@ async def serve(root: Path, project: Path):
         except Exception as error:
             emit({"id": request_id, "error": str(error)})
     try:
-        await manager.initialize()
+        await manager.initialize(autostart=autostart)
         emit({"event": "ready", "data": {"root": str(root), "protocol": 1}})
         while True:
             line = await asyncio.to_thread(sys.stdin.buffer.readline, 1024 * 1024 + 1)
@@ -136,8 +137,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--project", type=Path, required=True)
+    parser.add_argument("--autostart", action="store_true")
     args = parser.parse_args()
-    asyncio.run(serve(args.root.resolve(), args.project.resolve()))
+    asyncio.run(serve(args.root.resolve(), args.project.resolve(), autostart=args.autostart))
 
 
 if __name__ == "__main__":

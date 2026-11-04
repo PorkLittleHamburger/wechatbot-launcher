@@ -39,8 +39,18 @@ impl Drop for Attributes {
     fn drop(&mut self) { unsafe { DeleteProcThreadAttributeList(self.storage.as_mut_ptr().cast()) }; }
 }
 
+fn supervisor_command_line(python: &Path, project: &Path, root: &Path, autostart: bool) -> Vec<u16> {
+    let mut args = vec![
+        python.as_os_str(), OsStr::new("-B"), OsStr::new("-u"), OsStr::new("-m"),
+        OsStr::new("wechat_onebot.launcher.supervisor"), OsStr::new("--root"), root.as_os_str(),
+        OsStr::new("--project"), project.as_os_str(),
+    ];
+    if autostart { args.push(OsStr::new("--autostart")); }
+    super::paths::command_line(&args)
+}
+
 impl Process {
-    pub fn spawn(python: &Path, project: &Path, root: &Path) -> io::Result<(Self, File, File)> {
+    pub fn spawn(python: &Path, project: &Path, root: &Path, autostart: bool) -> io::Result<(Self, File, File)> {
         let python = super::paths::process_path(python);
         let project = super::paths::process_path(project);
         let root = super::paths::process_path(root);
@@ -80,8 +90,7 @@ impl Process {
         startup.lpAttributeList = attributes.storage.as_mut_ptr().cast();
         let exe = wide(python.as_os_str());
         let cwd = wide(project.as_os_str());
-        let args = [python.as_os_str(), OsStr::new("-B"), OsStr::new("-u"), OsStr::new("-m"), OsStr::new("wechat_onebot.launcher.supervisor"), OsStr::new("--root"), root.as_os_str(), OsStr::new("--project"), project.as_os_str()];
-        let mut command = super::paths::command_line(&args);
+        let mut command = supervisor_command_line(&python, &project, &root, autostart);
         let mut environment: Vec<_> = std::env::vars_os().filter(|(key, _)| {
             !["PYTHONDONTWRITEBYTECODE", "PYTHONIOENCODING", "PYTHONUTF8"].iter().any(|name| key.to_string_lossy().eq_ignore_ascii_case(name))
         }).collect();
@@ -116,5 +125,31 @@ impl Process {
     pub fn kill_tree(&self) -> io::Result<()> {
         if unsafe { TerminateJobObject(self.job.as_raw_handle(), 1) } == 0 { return Err(io::Error::last_os_error()); }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_supervisor_command(autostart: bool, expected: &str) {
+        let command = supervisor_command_line(
+            Path::new(r"C:\Launcher 中文\python\python.exe"),
+            Path::new(r"C:\Launcher 中文"),
+            Path::new(r"D:\Workspace 中文"),
+            autostart,
+        );
+        assert_eq!(command.last(), Some(&0));
+        assert_eq!(String::from_utf16(&command[..command.len() - 1]).unwrap(), expected);
+    }
+
+    #[test]
+    fn manual_supervisor_command_omits_autostart() {
+        assert_supervisor_command(false, r#""C:\Launcher 中文\python\python.exe" "-B" "-u" "-m" "wechat_onebot.launcher.supervisor" "--root" "D:\Workspace 中文" "--project" "C:\Launcher 中文""#);
+    }
+
+    #[test]
+    fn autostart_supervisor_command_forwards_flag() {
+        assert_supervisor_command(true, r#""C:\Launcher 中文\python\python.exe" "-B" "-u" "-m" "wechat_onebot.launcher.supervisor" "--root" "D:\Workspace 中文" "--project" "C:\Launcher 中文" "--autostart""#);
     }
 }

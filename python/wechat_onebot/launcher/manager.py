@@ -21,6 +21,7 @@ from ..config import ConfigError, _atomic_write_json, default_config
 from .locking import DirectoryLease
 from .instance_storage import bind_runtime, publish_instance
 from .async_utils import run_blocking
+from .bridge_status import read_bridge_status
 from .paths import identity_path, is_within, process_path, relative_storage_path, require_portable_relative
 
 
@@ -30,6 +31,9 @@ class ProcessSlot:
     process: subprocess.Popen | None = None
     error: str = ""
     probe: str = ""
+    resume_requested: bool = False
+    bridge_resume: dict | None = None
+    bridge_poll: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -79,6 +83,8 @@ class LauncherManager:
                 if slot.process.stdin:
                     slot.process.stdin.close()
                 slot.process = None
+                slot.bridge_resume = None
+                slot.resume_requested = False
                 slot.state = "error" if code else "stopped"
                 slot.error = f"进程退出，退出码 {code}" if code else ""
             if slot.process is None:
@@ -92,7 +98,8 @@ class LauncherManager:
                         slot.state, slot.error = "stopped", ""
             result.append({**row, "state": slot.state,
                            "pid": slot.process.pid if slot.process else None,
-                           "error": slot.error, "url": f"http://127.0.0.1:{row['port']}/"})
+                           "error": slot.error, "url": f"http://127.0.0.1:{row['port']}/",
+                           **({"bridge_resume": slot.bridge_resume} if slot.bridge_resume is not None else {})})
         seen = {row["id"] for row in result}
         if any(slot.process is not None and slot.process.poll() is None and instance_id not in seen
                for instance_id, slot in self.slots.items()):
@@ -190,15 +197,15 @@ class LauncherManager:
                 raise ConfigError("Helper 实例需以管理员身份运行启动器")
         return row
 
-    async def start(self, instance_id: str):
+    async def start(self, instance_id: str, *, resume_bridge: bool = False):
         slot = self.slots.setdefault(instance_id, ProcessSlot())
         async with slot.lock:
-            await self._start_locked(instance_id, slot)
+            await self._start_locked(instance_id, slot, resume_bridge=resume_bridge)
 
     def _launch_parameters(self, instance_id: str) -> tuple[str, Path]:
         return sys.executable, self.project
 
-    async def _start_locked(self, instance_id: str, slot: ProcessSlot):
+    async def _start_locked(self, instance_id: str, slot: ProcessSlot, *, resume_bridge: bool = False):
         if self.closing:
             raise ConfigError("启动器正在关闭")
         self.require_stopped(instance_id)
@@ -208,6 +215,8 @@ class LauncherManager:
         directory = self.directory(instance_id)
         python, project = self._launch_parameters(instance_id)
         slot.state, slot.error, slot.probe = "starting", "", secrets.token_urlsafe(32)
+        slot.resume_requested = resume_bridge
+        slot.bridge_resume = None
         env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1", WECHAT_LAUNCHER_PROBE=slot.probe)
         # Source development keeps launcher modules ahead of the external runtime.
         sources = [str(project / "src")]
@@ -221,7 +230,8 @@ class LauncherManager:
                 os.replace(log, directory / "service.previous.log")
             with log.open("ab", buffering=0) as output:
                 slot.process = subprocess.Popen(
-                    [str(python), "-B", "-u", "-m", "wechat_onebot.launcher.worker", str(directory / "config.json")],
+                    [str(python), "-B", "-u", "-m", "wechat_onebot.launcher.worker", str(directory / "config.json")]
+                    + (["--resume-bridge"] if resume_bridge else []),
                     cwd=project, env=env, stdin=subprocess.PIPE, stdout=output,
                     stderr=subprocess.STDOUT,
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
@@ -235,6 +245,7 @@ class LauncherManager:
                         response = await client.get(f"http://127.0.0.1:{row['port']}/_launcher/health",
                                                     headers={"X-Launcher-Probe": slot.probe})
                         if response.status_code == 200 and response.json().get("identity") == slot.probe:
+                            slot.bridge_resume = read_bridge_status(response.json(), slot.resume_requested)
                             slot.state = "running"
                             return
                     except (httpx.HTTPError, ValueError):
@@ -259,6 +270,7 @@ class LauncherManager:
                 await asyncio.to_thread(process.wait, timeout=5)
             slot.process = None
         slot.state = "stopped"
+        slot.resume_requested, slot.bridge_resume = False, None
 
     async def stop(self, instance_id: str):
         self.metadata(instance_id)

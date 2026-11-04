@@ -23,5 +23,8 @@ export function applyProgress(rows: Feedback[], event: OperationProgress): Feedb
 export function finishFeedback(row: Feedback, phase: 'success' | 'error' | 'cancelled', message: string): Feedback {
   // A terminal backend failure must survive a later resolved RPC.
   if (phase === 'success' && (row.phase === 'error' || row.phase === 'cancelled')) return { ...row, pending: false, progress: undefined };
-  return { ...row, pending: false, phase, message: phase === 'success' ? row.detail || message : message, progress: undefined };
+  const confirmedMessage = row.operation === 'start' || row.operation === 'restart'
+    ? '实例管理服务已就绪；微信桥接需在 WebUI 手动启动'
+    : row.detail || message;
+  return { ...row, pending: false, phase, message: phase === 'success' ? confirmedMessage : message, progress: undefined };
 }

@@ -3,6 +3,14 @@
 The Windows shell lives here. React/Vite is in `desktop/src`, Python management
 is in `python/wechat_onebot/launcher`, and staging/build scripts are in `scripts`.
 
+Unreleased bridge restoration forwards the shell's `--autostart` through `Ipc`
+and `Process` to the supervisor. Manual launches omit it. Only remembered
+instances with `autostart`, `restore_instances`, and `restore_bridges` enabled
+receive worker `--resume-bridge`. The worker enables the gateway's version-1
+resume controller explicitly; management readiness and bridge state remain
+separate. Existing version-local workers are immutable and may report no resume
+capability; users must import a compatible new Bot version and switch instances.
+
 ## Build inputs
 
 - Windows x64, a stable Rust MSVC toolchain, MSVC C++ linker/libraries and Windows

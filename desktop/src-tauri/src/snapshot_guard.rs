@@ -85,6 +85,13 @@ mod tests {
         assert!(settings_for_write(&json!({"settings":null})).is_err());
     }
     #[test]
+    fn settings_for_write_preserves_restore_bridges() {
+        for restore_bridges in [false, true] {
+            let settings = json!({"autostart":true, "restore_bridges":restore_bridges});
+            assert_eq!(settings_for_write(&json!({"settings":settings.clone()})).unwrap(), settings);
+        }
+    }
+    #[test]
     fn unrelated_section_failures_do_not_block_valid_operations() {
         for section in ["versions", "backups", "archives"] {
             let snapshot = json!({"instances":[], "settings":{"autostart":false}, "diagnostics":[{"section":section,"message":"broken entry"}]});

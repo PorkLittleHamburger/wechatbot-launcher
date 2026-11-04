@@ -219,7 +219,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![rpc, open_instance, reveal_workspace, change_workspace, exit_app, install_launcher_update])
         .setup(move |app| {
             let project = app.path().resource_dir()?.join("runtime");
-            let ipc = ipc::Ipc::spawn(app.handle().clone(), &project, &options.root).map_err(std::io::Error::other)?;
+            let ipc = ipc::Ipc::spawn(app.handle().clone(), &project, &options.root, options.autostart).map_err(std::io::Error::other)?;
             let hidden = options.autostart && setting(&options.root, "autostart_hidden", false);
             app.manage(Shell { ipc: ipc.clone(), root: options.root, startup_helper: app.path().resource_dir()?.join("startup/wechat-onebot-startup.exe"), settings: Mutex::new(()), autostart_error: Mutex::new(None), update_gate: RwLock::new(()), exiting: AtomicBool::new(false), exit_complete: AtomicBool::new(false) });
             let show = tauri::menu::MenuItem::with_id(app, "show", "显示启动器", true, None::<&str>)?;
