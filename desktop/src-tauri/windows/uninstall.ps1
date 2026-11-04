@@ -10,7 +10,11 @@ try {
             if ($name -notlike 'WeChat OneBot Launcher - *') { continue }
             $command = [string]$key.GetValue($name)
             # Exact quoted helper path plus the fixed argument, no substring match.
-            if (-not $command.StartsWith(('"' + $expectedHelper + '" "--task" "WeChatOneBotLauncher-S-1-'), [StringComparison]::OrdinalIgnoreCase)) { continue }
+            $matchesHelper = $false
+            foreach ($helperPath in @($expectedHelper, ('\\?\' + $expectedHelper))) {
+                if ($command.StartsWith(('"' + $helperPath + '" "--task" "WeChatOneBotLauncher-S-1-'), [StringComparison]::OrdinalIgnoreCase)) { $matchesHelper = $true }
+            }
+            if (-not $matchesHelper) { continue }
             Remove-ItemProperty -LiteralPath $runPath -Name $name
             $cleanup = @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run')
             # Retain the non-executable migration marker with retained settings:

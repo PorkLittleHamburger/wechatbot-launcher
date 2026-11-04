@@ -8,6 +8,26 @@ const MARKER: &str = r"Software\WeChatOneBotLauncher\StartupRegistrations";
 
 pub fn name(root: &Path) -> String { format!("WeChat OneBot Launcher - {}", crate::paths::workspace_key(root)) }
 
+pub fn command(helper: &Path, task: &str) -> Result<String, String> {
+    use std::path::{Component, Prefix};
+    let helper = crate::paths::process_path(helper);
+    // Explorer's login parser does not accept verbatim/device paths even when
+    // CreateProcess and the filesystem accept them. Do not register a broken Run value.
+    if !matches!(helper.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_))) || !helper.is_absolute() {
+        return Err("Windows 启动项需要普通本地路径，请将启动器安装到较短的本地目录".into());
+    }
+    let command = raw_command(&helper, task)?;
+    if command.encode_utf16().count() >= 260 {
+        return Err("Windows 启动项命令过长，请将启动器安装到较短的目录后再启用自启".into());
+    }
+    Ok(command)
+}
+
+pub fn raw_command(helper: &Path, task: &str) -> Result<String, String> {
+    let wide = crate::paths::command_line(&[helper.as_os_str(), std::ffi::OsStr::new("--task"), std::ffi::OsStr::new(task)]);
+    String::from_utf16(&wide[..wide.len()-1]).map_err(|e| e.to_string())
+}
+
 fn read(key: &str, name: &str) -> Result<Option<RegValue<'static>>, String> {
     match RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(key, KEY_READ | KEY_WOW64_64KEY)
         .and_then(|key| key.get_raw_value(name)) {
@@ -50,11 +70,11 @@ impl Entry {
         if !self.registered() { return Ok(false); }
         approval_enabled(self.approval.as_ref())
     }
-    pub fn verify_command(&self, command: &str) -> Result<(), String> {
+    pub fn verify_command(&self, command: &str, legacy: &str) -> Result<(), String> {
         use winreg::types::FromRegValue;
         if let Some(value) = &self.run {
             let actual = String::from_reg_value(value).map_err(|e| e.to_string())?;
-            if actual != command { return Err("自启入口属于其他安装路径，已保留原入口；请先在原安装中关闭自启".into()); }
+            if actual != command && actual != legacy { return Err("自启入口属于其他安装路径，已保留原入口；请先在原安装中关闭自启".into()); }
         }
         Ok(())
     }
@@ -67,6 +87,13 @@ impl Entry {
                 write(APPROVED, &self.name, Some(&RegValue { vtype: REG_BINARY, bytes: vec![2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0].into() }))?;
             }
             write(MARKER, &self.name, Some(&1u32.to_reg_value()))?;
+        } else if self.registered() {
+            // Only the executable spelling changes after ownership verification.
+            // Keep StartupApproved, including an external disable, byte-for-byte.
+            let expected = command.to_reg_value();
+            if self.run.as_ref().is_some_and(|value| value.vtype != expected.vtype || value.bytes != expected.bytes) {
+                write(RUN, &self.name, Some(&expected))?;
+            }
         }
         Ok(())
     }
@@ -101,6 +128,43 @@ fn approval_enabled(value: Option<&RegValue>) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn verbatim_run_command_migrates_without_enabling_a_disabled_entry() {
+        let root = std::env::temp_dir().join(format!("startup migration 中文 {}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let helper = root.join("startup.exe");
+        std::fs::write(&helper, []).unwrap();
+        struct Cleanup(Entry, std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) { self.0.restore().unwrap(); std::fs::remove_file(self.1.join("startup.exe")).unwrap(); std::fs::remove_dir(&self.1).unwrap(); }
+        }
+        let before = Entry::read(&root).unwrap();
+        let _cleanup = Cleanup(Entry::read(&root).unwrap(), root.clone());
+        let verbatim = helper.canonicalize().unwrap();
+        let task = "WeChatOneBotLauncher-S-1-5-isolated";
+        let expected = command(&verbatim, task).unwrap();
+        assert_eq!(expected, raw_command(&helper, task).unwrap());
+        assert!(!expected.contains(r"\\?\"));
+        let legacy = raw_command(&verbatim, task).unwrap();
+        assert_ne!(legacy, expected);
+        before.apply(true, &legacy, true).unwrap();
+        let disabled = RegValue { vtype: REG_BINARY, bytes: vec![3, 0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0].into() };
+        write(APPROVED, &before.name, Some(&disabled)).unwrap();
+        let old = Entry::read(&root).unwrap();
+        old.verify_command(&expected, &legacy).unwrap();
+        assert!(old.verify_command("other installation", "unrelated legacy").is_err());
+        old.apply(false, &expected, false).unwrap();
+        let migrated = Entry::read(&root).unwrap();
+        migrated.verify_command(&expected, &expected).unwrap();
+        assert!(!migrated.enabled().unwrap());
+        assert_eq!(migrated.approval.as_ref().unwrap().bytes, disabled.bytes);
+        assert_eq!(migrated.marker.as_ref().unwrap().bytes, old.marker.as_ref().unwrap().bytes);
+        old.restore_registration(false).unwrap();
+        Entry::read(&root).unwrap().verify_command(&legacy, &legacy).unwrap();
+        assert!(command(Path::new(r"\\?\UNC\server\share\startup.exe"), task).is_err());
+        assert!(command(Path::new(r"\\.\C:\startup.exe"), task).is_err());
+        assert!(command(Path::new("startup.exe"), task).is_err());
+    }
     #[test]
     fn task_manager_disable_is_recognized_even_without_timestamp() {
         assert!(approval_enabled(None).unwrap());

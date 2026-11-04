@@ -55,4 +55,6 @@ React 前端通过 Tauri 命令调用 Rust 桌面壳。Rust 管理 Python 服务
 
 0.8.6 新增任务管理器自启支持：启用后注册普通启动入口，由轻量程序请求按需高权限任务；可在 Windows“启动应用”中禁用或重新启用。在 Windows 中禁用/删除后，启动器不会按旧设置自动恢复，设置页显示实际状态。旧直接登录任务会迁移以避免绕过禁用。升级到 0.8.6 后启用自启即可使用。
 
+自启入口必须使用普通本地路径；后续修复会迁移 0.8.6 中可能写入的 `\\?\` 路径，并保留任务管理器中的禁用状态。入口执行及任务请求结果记录在 `%LOCALAPPDATA%\WeChatOneBotLauncherShell\startup.log`。Windows 注册状态为“启用”不能替代实际注销登录验证。
+
 0.8.5 修复版本发布源：版本管理直接读取 [Bot 发布页](https://github.com/PorkLittleHamburger/wechatbot/releases)，下载 `wechat-onebot-<版本>-windows-x64.zip`；启动器本体更新仍读取 Launcher 发布页。Bot 发布新版本无需等待启动器重新发布。0.8.4 及更早启动器可先通过“启动器更新”升级，也可手动导入 Bot ZIP，再停止实例并升级。

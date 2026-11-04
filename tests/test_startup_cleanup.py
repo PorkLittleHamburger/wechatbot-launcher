@@ -12,7 +12,8 @@ import pytest
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows startup registry")
 @pytest.mark.parametrize("shell_kind", ["pwsh", "windows_powershell"])
-def test_uninstall_removes_only_matching_startup_entry_and_keeps_disable_marker(tmp_path, shell_kind):
+@pytest.mark.parametrize("legacy_prefix", [False, True])
+def test_uninstall_removes_only_matching_startup_entry_and_keeps_disable_marker(tmp_path, shell_kind, legacy_prefix):
     import winreg
 
     paths = [r"Software\Microsoft\Windows\CurrentVersion\Run",
@@ -23,7 +24,8 @@ def test_uninstall_removes_only_matching_startup_entry_and_keeps_disable_marker(
     foreign = own + "-foreign"
     exe = tmp_path / "isolated installation with spaces" / "launcher.exe"
     helper = exe.parent / "startup" / "wechat-onebot-startup.exe"
-    command = f'"{helper}" "--task" "WeChatOneBotLauncher-S-1-5-isolated"'
+    helper_path = ("\\\\?\\" if legacy_prefix else "") + str(helper)
+    command = f'"{helper_path}" "--task" "WeChatOneBotLauncher-S-1-5-isolated"'
     try:
         winreg.SetValueEx(keys[0], own, 0, winreg.REG_SZ, command)
         winreg.SetValueEx(keys[0], foreign, 0, winreg.REG_SZ, '"D:\\another installation\\startup\\wechat-onebot-startup.exe" "--task" "WeChatOneBotLauncher-S-1-5-isolated"')

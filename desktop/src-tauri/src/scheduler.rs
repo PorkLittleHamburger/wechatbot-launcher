@@ -128,12 +128,11 @@ pub async fn configure(requested: bool, root: &Path, helper: &Path, explicit: bo
     let sid = identity.trim().rsplit(',').next().unwrap_or("").trim_matches('"').trim();
     if !sid.starts_with("S-1-") || !sid.bytes().all(|b| b.is_ascii_digit() || b == b'S' || b == b'-') { return Err("Invalid Windows SID".into()); }
     let name = format!("WeChatOneBotLauncher-{sid}-{}", crate::paths::workspace_key(root));
-    let wide = crate::paths::command_line(&[helper.as_os_str(), std::ffi::OsStr::new("--task"), std::ffi::OsStr::new(&name)]);
-    let command = String::from_utf16(&wide[..wide.len()-1]).map_err(|e| e.to_string())?;
-    if command.encode_utf16().count() >= 260 {
-        return Err("Windows 启动项命令过长，请将启动器安装到较短的目录后再启用自启".into());
-    }
-    entry.verify_command(&command)?;
+    let command = crate::startup_entry::command(helper, &name)?;
+    // Accept exactly the old 0.8.6 command for this same helper and task, never
+    // an arbitrary command or an entry from another installation.
+    let legacy = crate::startup_entry::raw_command(&helper.canonicalize().unwrap_or_else(|_| helper.to_path_buf()), &name)?;
+    entry.verify_command(&command, &legacy)?;
     let enabled = if explicit || !entry.known() { requested } else { entry.enabled()? };
     // A Task Manager-disabled Run entry retains its on-demand task so Windows
     // can re-enable the entry later. The task itself has NO logon trigger.
@@ -146,11 +145,11 @@ pub async fn configure(requested: bool, root: &Path, helper: &Path, explicit: bo
         configure_task(need_task, root).await?;
         entry.apply(enabled, &command, explicit)?;
         let actual = crate::startup_entry::Entry::read(root)?;
-        actual.verify_command(&command)?;
+        actual.verify_command(&command, &command)?;
         actual.enabled()
     }.await;
     if result.is_err() {
-        let registry = if explicit || !entry.known() { entry.restore_registration(explicit && enabled) } else { Ok(()) };
+        let registry = entry.restore_registration(explicit && enabled);
         let task = if let Some(content) = before { install(&name, &content, root).await }
             else { configure_task(false, root).await };
         if registry.is_err() || task.is_err() {
@@ -236,9 +235,15 @@ mod tests {
         install(&name, &legacy, &root).await.unwrap();
         let key = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER).create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run").unwrap().0;
         let entry_name = crate::startup_entry::name(&root);
+        let run = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER).open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", winreg::enums::KEY_WRITE | winreg::enums::KEY_WOW64_64KEY).unwrap();
+        let old_command = crate::startup_entry::raw_command(&helper.canonicalize().unwrap(), &name).unwrap();
+        run.set_value(&entry_name, &old_command).unwrap();
         let disabled = winreg::RegValue {vtype: winreg::enums::REG_BINARY, bytes: vec![3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0].into()};
         key.set_raw_value(&entry_name, &disabled).unwrap();
         assert!(!configure(true, &root, &helper, false).await.unwrap());
+        let migrated = crate::startup_entry::Entry::read(&root).unwrap();
+        let command = crate::startup_entry::command(&helper, &name).unwrap();
+        migrated.verify_command(&command, &command).unwrap();
         assert!(!query(&name).await.unwrap().unwrap().contains("LogonTrigger"));
         assert_eq!(key.get_raw_value(&entry_name).unwrap().bytes, disabled.bytes);
         assert!(!configure(false, &root, &helper, false).await.unwrap());
