@@ -6,6 +6,7 @@ compile_error!("WeChat OneBot Launcher desktop currently targets Windows only");
 mod ipc;
 mod paths;
 mod scheduler;
+mod startup_entry;
 mod windows;
 mod updater;
 
@@ -19,6 +20,7 @@ use tokio::sync::RwLock;
 struct Shell {
     ipc: Arc<ipc::Ipc>,
     root: PathBuf,
+    startup_helper: PathBuf,
     settings: Mutex<()>,
     autostart_error: Mutex<Option<String>>,
     update_gate: RwLock<()>,
@@ -52,7 +54,7 @@ fn show_main(app: &tauri::AppHandle) {
 }
 
 #[tauri::command]
-async fn rpc(window: WebviewWindow, state: tauri::State<'_, Shell>, method: String, params: Value) -> Result<Value, String> {
+async fn rpc(window: WebviewWindow, state: tauri::State<'_, Shell>, method: String, mut params: Value) -> Result<Value, String> {
     require_main(&window)?;
     let _update_gate = state.update_gate.read().await;
     if state.exiting.load(Ordering::Acquire) { return Err("Launcher is shutting down".into()); }
@@ -62,15 +64,31 @@ async fn rpc(window: WebviewWindow, state: tauri::State<'_, Shell>, method: Stri
         let _transaction = state.settings.lock().await;
         let mut snapshot = state.ipc.request(&method, params).await?;
         snapshot["autostart_error"] = json!(*state.autostart_error.lock().await);
+        match startup_entry::Entry::read(&state.root).and_then(|entry| {
+            let enabled = if entry.known() { Some(entry.enabled()?) } else { None };
+            Ok((entry.name.clone(), entry.registered(), enabled))
+        }) {
+            Ok((name, registered, enabled)) => {
+                snapshot["autostart_status"] = json!({"entry_name": name, "registered": registered, "enabled": enabled});
+                if let Some(enabled) = enabled { snapshot["settings"]["autostart"] = json!(enabled); }
+            }
+            Err(error) => { snapshot["autostart_error"] = json!(error); }
+        }
         return Ok(snapshot);
     }
     if method != "settings_set" { return state.ipc.request(&method, params).await; }
+    let explicit = match params.as_object_mut().unwrap().remove("autostart_explicit") {
+        None => false,
+        Some(Value::Bool(value)) => value,
+        _ => return Err("Invalid autostart intent".into()),
+    };
     let _transaction = state.settings.lock().await;
     let before = state.ipc.request("settings_get", json!({})).await?;
-    let after = state.ipc.request("settings_set", params).await?;
+    let mut after = state.ipc.request("settings_set", params).await?;
     {
         let enabled = after.get("autostart").and_then(Value::as_bool).ok_or("Invalid autostart setting from supervisor")?;
-        if let Err(error) = scheduler::configure(enabled, &state.root).await {
+        let result = scheduler::configure(enabled, &state.root, &state.startup_helper, explicit).await;
+        if let Err(error) = &result {
             *state.autostart_error.lock().await = Some(error.clone());
             let _ = std::fs::write(state.root.join("autostart.log"), &error);
             let rollback = state.ipc.request("settings_set", before).await;
@@ -78,6 +96,11 @@ async fn rpc(window: WebviewWindow, state: tauri::State<'_, Shell>, method: Stri
                 Ok(_) => format!("Autostart task update failed; Python settings restored: {error}"),
                 Err(rollback) => format!("Autostart task update failed: {error}; settings rollback also failed: {rollback}"),
             });
+        }
+        let actual = result?;
+        if actual != enabled {
+            after["autostart"] = json!(actual);
+            state.ipc.request("settings_set", after.clone()).await?;
         }
         *state.autostart_error.lock().await = None;
     }
@@ -129,7 +152,7 @@ async fn change_workspace(window: WebviewWindow, app: tauri::AppHandle, state: t
         matches!(row.get("state").and_then(Value::as_str), Some("running" | "starting" | "stopping" | "restarting"))
     })).unwrap_or(false);
     if active { return Err("请先停止所有实例，再更改数据目录".into()); }
-    scheduler::configure(false, &state.root).await.map_err(|e| format!("Remove old autostart task: {e}"))?;
+    scheduler::configure(false, &state.root, &state.startup_helper, true).await.map_err(|e| format!("Remove old autostart task: {e}"))?;
     paths::save_workspace(&root)?;
     if state.exiting.swap(true, Ordering::AcqRel) { return Err("Launcher is shutting down".into()); }
     let ipc = state.ipc.clone();
@@ -194,7 +217,7 @@ fn main() {
             let project = app.path().resource_dir()?.join("runtime");
             let ipc = ipc::Ipc::spawn(app.handle().clone(), &project, &options.root).map_err(std::io::Error::other)?;
             let hidden = options.autostart && setting(&options.root, "autostart_hidden", false);
-            app.manage(Shell { ipc: ipc.clone(), root: options.root, settings: Mutex::new(()), autostart_error: Mutex::new(None), update_gate: RwLock::new(()), exiting: AtomicBool::new(false), exit_complete: AtomicBool::new(false) });
+            app.manage(Shell { ipc: ipc.clone(), root: options.root, startup_helper: app.path().resource_dir()?.join("startup/wechat-onebot-startup.exe"), settings: Mutex::new(()), autostart_error: Mutex::new(None), update_gate: RwLock::new(()), exiting: AtomicBool::new(false), exit_complete: AtomicBool::new(false) });
             let show = tauri::menu::MenuItem::with_id(app, "show", "显示启动器", true, None::<&str>)?;
             let exit = tauri::menu::MenuItem::with_id(app, "exit", "退出", true, None::<&str>)?;
             let menu = tauri::menu::Menu::with_items(app, &[&show, &exit])?;
@@ -220,8 +243,14 @@ fn main() {
                 let _transaction = state.settings.lock().await;
                 if state.exiting.load(Ordering::Acquire) { return; }
                 let result = match ipc.request("settings_get", json!({})).await {
-                    Ok(settings) => match settings.get("autostart").and_then(Value::as_bool) {
-                        Some(enabled) => scheduler::configure(enabled, &state.root).await,
+                    Ok(mut settings) => match settings.get("autostart").and_then(Value::as_bool) {
+                        Some(enabled) => match scheduler::configure(enabled, &state.root, &state.startup_helper, false).await {
+                            Ok(actual) => {
+                                settings["autostart"] = json!(actual);
+                                ipc.request("settings_set", settings).await.map(|_| ())
+                            }
+                            Err(error) => Err(error),
+                        },
                         None => Err("Invalid autostart setting from supervisor".into()),
                     },
                     Err(error) => Err(error),

@@ -34,7 +34,7 @@
     "useLocalToolsDir": true,
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
-    "resources": {"resources/runtime/": "runtime/"},
+    "resources": {"resources/runtime/": "runtime/", "resources/startup/": "startup/"},
     "windows": {
       "webviewInstallMode": {"type": "offlineInstaller", "silent": true},
       "nsis": {

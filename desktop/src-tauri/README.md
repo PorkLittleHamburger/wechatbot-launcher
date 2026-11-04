@@ -111,7 +111,7 @@ the app. Existing files are not migrated automatically.
 ## Settings and installer behavior
 
 `rpc('settings_set', params)` is serialized in Rust. After Python accepts the
-settings, every save reconciles `autostart` with a current-user logon scheduled task via
+settings, every save reconciles a current-user Run entry and an on-demand task via
 `schtasks` XML: `InteractiveToken`, `HighestAvailable`, fixed executable, and
 `--autostart --workspace <root>`. Task names include the current SID and a stable
 workspace hash. An existing task must match this application's Source, user SID,
@@ -120,7 +120,15 @@ Task changes preserve/restore prior task XML on failure; Python settings are
 rolled back if task configuration fails. Any rollback failure is reported too.
 Building never registers a task. Startup reconciles the explicitly saved setting
 after the supervisor is ready, under the same settings lock used by saves. This
-repairs missing/disabled tasks after upgrades without toggling the checkbox.
+repairs the on-demand task and removes old logon triggers. A bundled console-free
+`startup/wechat-onebot-startup.exe` has an explicit `asInvoker` manifest; Windows
+starts it through HKCU Run, and it requests only the pre-authorized task.
+Task Manager's HKCU StartupApproved override is respected, including when saving
+other settings. A per-user/workspace migration marker distinguishes first setup
+from a deleted Run entry. Only an explicit autostart edit may reset the override.
+Snapshots report actual registry status, independently of the stored preference.
+Task and registry changes roll back together; uninstall removes only matching
+helper entries and retains migration records when retaining user settings.
 Registration is read back and verified inside the rollback transaction. Failures
 appear in the snapshot/UI and `autostart.log`; they do not stop the management UI.
 Localized schtasks diagnostics are decoded with the Windows OEM code page.

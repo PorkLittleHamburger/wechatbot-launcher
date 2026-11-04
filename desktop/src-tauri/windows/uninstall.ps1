@@ -2,6 +2,25 @@ param([Parameter(Mandatory=$true)][string]$InstalledExe, [switch]$RemoveData)
 $ErrorActionPreference = 'Stop'
 try {
     $expectedExe = [IO.Path]::GetFullPath($InstalledExe)
+    $expectedHelper = [IO.Path]::Combine([IO.Path]::GetDirectoryName($expectedExe), 'startup', 'wechat-onebot-startup.exe')
+    $runPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    if (Test-Path -LiteralPath $runPath) {
+        $key = Get-Item -LiteralPath $runPath
+        foreach ($name in $key.GetValueNames()) {
+            if ($name -notlike 'WeChat OneBot Launcher - *') { continue }
+            $command = [string]$key.GetValue($name)
+            # Exact quoted helper path plus the fixed argument, no substring match.
+            if (-not $command.StartsWith(('"' + $expectedHelper + '" "--task" "WeChatOneBotLauncher-S-1-'), [StringComparison]::OrdinalIgnoreCase)) { continue }
+            Remove-ItemProperty -LiteralPath $runPath -Name $name
+            $cleanup = @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run')
+            # Retain the non-executable migration marker with retained settings:
+            # reinstall/upgrade must not silently re-enable a deleted Run entry.
+            if ($RemoveData) { $cleanup += 'HKCU:\Software\WeChatOneBotLauncher\StartupRegistrations' }
+            foreach ($path in $cleanup) {
+                Remove-ItemProperty -LiteralPath $path -Name $name -ErrorAction SilentlyContinue
+            }
+        }
+    }
     $scheduler = New-Object -ComObject 'Schedule.Service'
     $scheduler.Connect()
     $folder = $scheduler.GetFolder('\')

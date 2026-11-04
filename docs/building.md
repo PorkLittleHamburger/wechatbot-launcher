@@ -66,6 +66,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build_desktop.ps1
 
 安装器包含网关运行时、WebView2 离线组件和经签名及哈希校验的 Visual C++ x64 运行库。默认安装包未做代码签名。
 
+Cargo 的 `build.rs` 使用同一 Rust 工具链编译 `src/startup_helper.rs`，生成具有显式 `asInvoker` 清单的无控制台程序；Tauri 将其作为 `startup/wechat-onebot-startup.exe` 打包。该生成文件与运行时资源一样不提交。变更自启入口时应校验程序清单与最终安装器中的资源路径。
+
 ## 校验与 CI
 
 ```powershell

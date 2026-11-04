@@ -69,7 +69,7 @@ async fn install(name: &str, content: &str, root: &Path) -> Result<(), String> {
     if ok { Ok(()) } else { Err(message) }
 }
 
-pub async fn configure(enabled: bool, root: &Path) -> Result<(), String> {
+async fn configure_task(enabled: bool, root: &Path) -> Result<(), String> {
     let (ok, identity) = run("whoami.exe", &["/user", "/fo", "csv", "/nh"]).await?;
     if !ok { return Err(identity); }
     let sid = identity.trim().rsplit(',').next().unwrap_or("").trim_matches('"').trim();
@@ -82,7 +82,7 @@ pub async fn configure(enabled: bool, root: &Path) -> Result<(), String> {
         let mutation = if enabled {
             let args = crate::paths::command_line(&[std::ffi::OsStr::new("--autostart"), std::ffi::OsStr::new("--workspace"), root.as_os_str()]);
             let args = String::from_utf16(&args[..args.len()-1]).map_err(|e| e.to_string())?;
-            let content = format!(r#"<?xml version="1.0" encoding="UTF-16"?><Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><RegistrationInfo><Source>{SOURCE}</Source><Description>WeChat OneBot Launcher current-user logon</Description></RegistrationInfo><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{sid}</UserId></LogonTrigger></Triggers><Principals><Principal id="Author"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Enabled>true</Enabled></Settings><Actions Context="Author"><Exec><Command>{}</Command><Arguments>{}</Arguments><WorkingDirectory>{}</WorkingDirectory></Exec></Actions></Task>"#, xml(&exe.to_string_lossy()), xml(&args), xml(&exe.parent().ok_or("Executable directory missing")?.to_string_lossy()));
+            let content = format!(r#"<?xml version="1.0" encoding="UTF-16"?><Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><RegistrationInfo><Source>{SOURCE}</Source><Description>WeChat OneBot Launcher current-user logon</Description></RegistrationInfo><Triggers /><Principals><Principal id="Author"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Enabled>true</Enabled></Settings><Actions Context="Author"><Exec><Command>{}</Command><Arguments>{}</Arguments><WorkingDirectory>{}</WorkingDirectory></Exec></Actions></Task>"#, xml(&exe.to_string_lossy()), xml(&args), xml(&exe.parent().ok_or("Executable directory missing")?.to_string_lossy()));
             install(&name, &content, root).await
         } else if before.is_some() {
             match run("schtasks.exe", &["/Delete", "/TN", &name, "/F"]).await {
@@ -121,6 +121,45 @@ pub async fn configure(enabled: bool, root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+pub async fn configure(requested: bool, root: &Path, helper: &Path, explicit: bool) -> Result<bool, String> {
+    let entry = crate::startup_entry::Entry::read(root)?;
+    let (ok, identity) = run("whoami.exe", &["/user", "/fo", "csv", "/nh"]).await?;
+    if !ok { return Err(identity); }
+    let sid = identity.trim().rsplit(',').next().unwrap_or("").trim_matches('"').trim();
+    if !sid.starts_with("S-1-") || !sid.bytes().all(|b| b.is_ascii_digit() || b == b'S' || b == b'-') { return Err("Invalid Windows SID".into()); }
+    let name = format!("WeChatOneBotLauncher-{sid}-{}", crate::paths::workspace_key(root));
+    let wide = crate::paths::command_line(&[helper.as_os_str(), std::ffi::OsStr::new("--task"), std::ffi::OsStr::new(&name)]);
+    let command = String::from_utf16(&wide[..wide.len()-1]).map_err(|e| e.to_string())?;
+    if command.encode_utf16().count() >= 260 {
+        return Err("Windows 启动项命令过长，请将启动器安装到较短的目录后再启用自启".into());
+    }
+    entry.verify_command(&command)?;
+    let enabled = if explicit || !entry.known() { requested } else { entry.enabled()? };
+    // A Task Manager-disabled Run entry retains its on-demand task so Windows
+    // can re-enable the entry later. The task itself has NO logon trigger.
+    let need_task = enabled || (!explicit && entry.registered());
+    if need_task && !helper.is_file() { return Err(format!("启动入口程序缺失：{}", helper.display())); }
+    let before = query(&name).await?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    if let Some(content) = &before { verify_owned(content, sid, &exe)?; }
+    let result = async {
+        configure_task(need_task, root).await?;
+        entry.apply(enabled, &command, explicit)?;
+        let actual = crate::startup_entry::Entry::read(root)?;
+        actual.verify_command(&command)?;
+        actual.enabled()
+    }.await;
+    if result.is_err() {
+        let registry = if explicit || !entry.known() { entry.restore_registration(explicit && enabled) } else { Ok(()) };
+        let task = if let Some(content) = before { install(&name, &content, root).await }
+            else { configure_task(false, root).await };
+        if registry.is_err() || task.is_err() {
+            return Err(format!("{}; rollback: registry={registry:?}, task={task:?}", result.unwrap_err()));
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,7 +183,7 @@ mod tests {
         }
         let _cleanup = Cleanup(name.clone(), root.clone());
         assert!(query(&name).await.unwrap().is_none());
-        if let Err(error) = configure(true, &root).await {
+        if let Err(error) = configure_task(true, &root).await {
             // A non-elevated development shell cannot create HighestAvailable
             // tasks. Verify the failure is explicit and no partial task remains.
             assert!(error.contains("拒绝访问") || error.to_lowercase().contains("access is denied"), "{error}");
@@ -152,14 +191,60 @@ mod tests {
             return;
         }
         let first = query(&name).await.unwrap().unwrap();
+        assert!(!first.contains("LogonTrigger"));
         verify_owned(&first, sid, &std::env::current_exe().unwrap()).unwrap();
         assert!(first.contains("--autostart") && first.contains("中文"));
         let (ok, message) = run("schtasks.exe", &["/Change", "/TN", &name, "/DISABLE"]).await.unwrap();
         assert!(ok, "{message}");
-        configure(true, &root).await.unwrap();
-        configure(false, &root).await.unwrap();
+        configure_task(true, &root).await.unwrap();
+        configure_task(false, &root).await.unwrap();
         assert!(query(&name).await.unwrap().is_none());
-        configure(true, &root).await.unwrap();
-        configure(false, &root).await.unwrap();
+        configure_task(true, &root).await.unwrap();
+        configure_task(false, &root).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "isolated task/registry integration; never runs the task"]
+    async fn task_manager_override_survives_reconcile_and_legacy_task_migration() {
+        let root = std::env::temp_dir().join(format!("wechat-run-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&root).unwrap();
+        let before = crate::startup_entry::Entry::read(&root).unwrap();
+        struct Restore(crate::startup_entry::Entry, PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) { self.0.restore().unwrap(); let _ = std::fs::remove_dir(&self.1); }
+        }
+        let _restore = Restore(before, root.clone());
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/startup/wechat-onebot-startup.exe");
+        if let Err(error) = configure(true, &root, &helper, true).await {
+            assert!(error.contains("拒绝访问") || error.to_lowercase().contains("access is denied"), "{error}");
+            assert!(!crate::startup_entry::Entry::read(&root).unwrap().registered());
+            return;
+        }
+        let (_, identity) = run("whoami.exe", &["/user", "/fo", "csv", "/nh"]).await.unwrap();
+        let sid = identity.trim().rsplit(',').next().unwrap().trim_matches('"');
+        let name = format!("WeChatOneBotLauncher-{sid}-{}", crate::paths::workspace_key(&root));
+        struct DeleteTask(String);
+        impl Drop for DeleteTask {
+            fn drop(&mut self) { let _ = std::process::Command::new(system_exe("schtasks.exe").unwrap()).args(["/Delete", "/TN", &self.0, "/F"]).output(); }
+        }
+        let _delete = DeleteTask(name.clone());
+        let content = query(&name).await.unwrap().unwrap();
+        let legacy = content.replace("<Triggers />", &format!("<Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{sid}</UserId></LogonTrigger></Triggers>"));
+        assert!(legacy.contains("LogonTrigger"));
+        install(&name, &legacy, &root).await.unwrap();
+        let key = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER).create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run").unwrap().0;
+        let entry_name = crate::startup_entry::name(&root);
+        let disabled = winreg::RegValue {vtype: winreg::enums::REG_BINARY, bytes: vec![3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0].into()};
+        key.set_raw_value(&entry_name, &disabled).unwrap();
+        assert!(!configure(true, &root, &helper, false).await.unwrap());
+        assert!(!query(&name).await.unwrap().unwrap().contains("LogonTrigger"));
+        assert_eq!(key.get_raw_value(&entry_name).unwrap().bytes, disabled.bytes);
+        assert!(!configure(false, &root, &helper, false).await.unwrap());
+        key.set_raw_value(&entry_name, &winreg::RegValue {vtype: winreg::enums::REG_BINARY, bytes: vec![2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0].into()}).unwrap();
+        assert!(configure(false, &root, &helper, false).await.unwrap());
+        assert!(configure(true, &root, &helper, true).await.unwrap());
+        assert!(!configure(false, &root, &helper, true).await.unwrap());
+        assert!(query(&name).await.unwrap().is_none());
+        assert!(!configure(true, &root, &helper, false).await.unwrap());
     }
 }
