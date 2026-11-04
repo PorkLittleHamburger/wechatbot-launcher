@@ -80,6 +80,10 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build_desktop.ps1
 
 Cargo 的 `build.rs` 使用同一 Rust 工具链编译 `src/startup_helper.rs`，生成具有显式 `asInvoker` 清单的无控制台程序；Tauri 将其作为 `startup/wechat-onebot-startup.exe` 打包。该生成文件与运行时资源一样不提交。变更自启入口时应校验程序清单与最终安装器中的资源路径。
 
+## 前端反馈回归
+
+在 `desktop` 目录运行 `node --test src/feedback.test.mjs`，验证并发进度归属、终态、DTO 与诊断组件静态渲染；再运行 `npm run build` 完成 TypeScript/Vite 检查。完整 `build_desktop.ps1` 也会执行反馈测试，失败即停止构建。这些检查不启动真实 Tauri 窗口。
+
 ## 校验与 CI
 
 ```powershell

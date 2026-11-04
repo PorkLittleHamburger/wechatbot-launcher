@@ -6,6 +6,8 @@ compile_error!("WeChat OneBot Launcher desktop currently targets Windows only");
 mod ipc;
 mod paths;
 mod scheduler;
+mod autostart;
+mod snapshot_guard;
 mod startup_entry;
 mod windows;
 mod updater;
@@ -83,18 +85,20 @@ async fn rpc(window: WebviewWindow, state: tauri::State<'_, Shell>, method: Stri
         _ => return Err("Invalid autostart intent".into()),
     };
     let _transaction = state.settings.lock().await;
-    let before = state.ipc.request("settings_get", json!({})).await?;
+    if state.exiting.load(Ordering::Acquire) { return Err("Launcher is shutting down".into()); }
+    let snapshot = state.ipc.request("snapshot", json!({})).await?;
+    let before = snapshot_guard::settings_for_write(&snapshot)?;
     let mut after = state.ipc.request("settings_set", params).await?;
     {
         let enabled = after.get("autostart").and_then(Value::as_bool).ok_or("Invalid autostart setting from supervisor")?;
-        let result = scheduler::configure(enabled, &state.root, &state.startup_helper, explicit).await;
+        let result = autostart::configure(enabled, &state.root, &state.startup_helper, explicit).await;
         if let Err(error) = &result {
             *state.autostart_error.lock().await = Some(error.clone());
             let _ = std::fs::write(state.root.join("autostart.log"), &error);
             let rollback = state.ipc.request("settings_set", before).await;
             return Err(match rollback {
-                Ok(_) => format!("Autostart task update failed; Python settings restored: {error}"),
-                Err(rollback) => format!("Autostart task update failed: {error}; settings rollback also failed: {rollback}"),
+                Ok(_) => format!("Autostart registration update failed; Python settings restored: {error}"),
+                Err(rollback) => format!("Autostart registration update failed: {error}; settings rollback also failed: {rollback}"),
             });
         }
         let actual = result?;
@@ -142,17 +146,18 @@ async fn reveal_workspace(window: WebviewWindow, app: tauri::AppHandle, state: t
 async fn change_workspace(window: WebviewWindow, app: tauri::AppHandle, state: tauri::State<'_, Shell>, path: String) -> Result<(), String> {
     require_main(&window)?;
     let _update_gate = state.update_gate.read().await;
+    // Workspace removal, settings saves and startup reconciliation mutate the
+    // same task/Run state and must share one transaction lock.
+    let _transaction = state.settings.lock().await;
     if state.exiting.load(Ordering::Acquire) { return Err("Launcher is shutting down".into()); }
     let requested = PathBuf::from(path);
     if !requested.is_absolute() { return Err("Workspace path must be absolute".into()); }
     let root = paths::prepare_workspace(requested)?;
     if root == state.root { return Ok(()); }
     let snapshot = state.ipc.request("snapshot", json!({})).await?;
-    let active = snapshot.get("instances").and_then(Value::as_array).map(|rows| rows.iter().any(|row| {
-        matches!(row.get("state").and_then(Value::as_str), Some("running" | "starting" | "stopping" | "restarting"))
-    })).unwrap_or(false);
+    let active = snapshot_guard::has_active_instances(&snapshot)?;
     if active { return Err("请先停止所有实例，再更改数据目录".into()); }
-    scheduler::configure(false, &state.root, &state.startup_helper, true).await.map_err(|e| format!("Remove old autostart task: {e}"))?;
+    autostart::configure(false, &state.root, &state.startup_helper, true).await.map_err(|e| format!("Remove old autostart registration: {e}"))?;
     paths::save_workspace(&root)?;
     if state.exiting.swap(true, Ordering::AcqRel) { return Err("Launcher is shutting down".into()); }
     let ipc = state.ipc.clone();
@@ -182,8 +187,7 @@ async fn install_launcher_update(window: WebviewWindow, app: tauri::AppHandle, s
     let _transaction = state.settings.lock().await;
     if state.exiting.load(Ordering::Acquire) { return Err("Launcher is shutting down".into()); }
     let snapshot = state.ipc.request("snapshot", json!({})).await?;
-    let rows = snapshot.get("instances").and_then(Value::as_array).ok_or("Invalid instance snapshot")?;
-    if rows.iter().any(|row| !matches!(row.get("state").and_then(Value::as_str), Some("stopped" | "created" | "error" | "failed"))) {
+    if snapshot_guard::has_active_instances(&snapshot)? {
         return Err("请先停止所有实例，再安装启动器更新".into());
     }
     let ready = state.ipc.request("launcher_update_prepare_install", json!({})).await?;
@@ -242,9 +246,9 @@ fn main() {
                 let state = handle.state::<Shell>();
                 let _transaction = state.settings.lock().await;
                 if state.exiting.load(Ordering::Acquire) { return; }
-                let result = match ipc.request("settings_get", json!({})).await {
+                let result = match ipc.request("snapshot", json!({})).await.and_then(|snapshot| snapshot_guard::settings_for_write(&snapshot)) {
                     Ok(mut settings) => match settings.get("autostart").and_then(Value::as_bool) {
-                        Some(enabled) => match scheduler::configure(enabled, &state.root, &state.startup_helper, false).await {
+                        Some(enabled) => match autostart::configure(enabled, &state.root, &state.startup_helper, false).await {
                             Ok(actual) => {
                                 settings["autostart"] = json!(actual);
                                 ipc.request("settings_set", settings).await.map(|_| ())

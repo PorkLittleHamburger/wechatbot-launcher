@@ -13,11 +13,13 @@ import uuid
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath
+from collections.abc import Callable
 
 import httpx
 
 from ..config import ConfigError
 from .paths import require_portable_relative
+from .async_utils import run_blocking
 
 MANIFEST = "VERSION_MANIFEST.json"
 VERSION_RE = re.compile(r"\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?")
@@ -129,7 +131,7 @@ def validate_manifest(directory: Path, *, verify: bool = True) -> dict:
         raw = json.loads((directory / MANIFEST).read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise ConfigError("版本包缺少有效兼容清单，不兼容当前启动器") from error
-    if (raw.get("package_schema") != PACKAGE_SCHEMA or raw.get("launcher_api") != LAUNCHER_API
+    if (not isinstance(raw, dict) or raw.get("package_schema") != PACKAGE_SCHEMA or raw.get("launcher_api") != LAUNCHER_API
             or raw.get("architecture") != "windows-x64"
             or not isinstance(raw.get("version"), str) or not VERSION_RE.fullmatch(raw["version"])):
         raise ConfigError("版本包格式、平台或启动器协议不兼容")
@@ -154,7 +156,9 @@ def validate_manifest(directory: Path, *, verify: bool = True) -> dict:
     if verify:
         actual = {p.relative_to(directory).as_posix() for p in directory.rglob("*") if p.is_file()}
         if actual != set(files) | {MANIFEST}:
-            raise ConfigError("版本包包含未校验文件")
+            unexpected = sorted(actual - set(files) - {MANIFEST})
+            missing = sorted((set(files) | {MANIFEST}) - actual)
+            raise ConfigError(f"版本包包含未校验文件或清单缺项；额外文件：{unexpected[:5]}；缺少文件：{missing[:5]}")
     return raw
 
 
@@ -241,23 +245,17 @@ class VersionStore:
             return {"version": raw["version"], "path": str(target), "compatible": True}
 
     async def import_archive(self, path: Path, *, replace: bool = False,
-                            referenced_versions: set[str] | None = None) -> dict:
+                            referenced_versions: set[str] | None = None,
+                            references: Callable[[], set[str]] | None = None) -> dict:
         async with self.lock:
-            return await self._thread(self._install, Path(path), archive=True,
+            if references is not None:
+                referenced_versions = references()
+            return await run_blocking(self._install, Path(path), archive=True,
                                         replace=replace, referenced_versions=referenced_versions)
 
     async def import_directory(self, path: Path) -> dict:
         async with self.lock:
-            return await self._thread(self._install, Path(path), archive=False)
-
-    @staticmethod
-    async def _thread(function, *args, **kwargs):
-        task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-        try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            await task
-            raise
+            return await run_blocking(self._install, Path(path), archive=False)
 
     def remove(self, version: str, referenced_versions: set[str]):
         if version in referenced_versions:
@@ -322,24 +320,24 @@ class VersionStore:
             raise ConfigError("没有可下载的兼容版本")
         downloads = self.root / "downloads"
         downloads.mkdir(exist_ok=True)
-        path = downloads / f"{version}.zip.partial"
-        async with self.lock:
-            try:
-                async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-                    async with client.stream("GET", release["download_url"]) as response:
-                        response.raise_for_status()
-                        received = 0
-                        with path.open("wb") as output:
-                            async for chunk in response.aiter_bytes(1024 * 1024):
-                                received += len(chunk)
-                                if received > 2 * 1024**3:
-                                    raise ConfigError("下载超过大小限制")
-                                output.write(chunk)
-                                progress(f"下载 {version}", min(90, int(received * 90 / max(1, release["size"]))))
-                expected = release.get("digest")
-                if expected and expected.startswith("sha256:") and digest(path) != expected[7:]:
-                    raise ConfigError("下载文件 SHA-256 不匹配")
-                result = await self._thread(self._install, path, archive=True, expected_version=version)
-                return result
-            finally:
-                path.unlink(missing_ok=True)
+        path = downloads / f"{version}-{uuid.uuid4().hex}.zip.partial"
+        try:
+            async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+                async with client.stream("GET", release["download_url"]) as response:
+                    response.raise_for_status()
+                    received = 0
+                    with path.open("xb") as output:
+                        async for chunk in response.aiter_bytes(1024 * 1024):
+                            received += len(chunk)
+                            if received > 2 * 1024**3:
+                                raise ConfigError("下载超过大小限制")
+                            output.write(chunk)
+                            progress(f"正在下载 {version}（{received // 1024} KiB）", min(90, int(received * 90 / max(1, release["size"]))))
+            expected = release.get("digest")
+            if expected and expected.startswith("sha256:") and digest(path) != expected[7:]:
+                raise ConfigError("下载文件 SHA-256 不匹配")
+            progress("下载完成，等待版本库并校验运行包；原有实例不受影响", 92)
+            async with self.lock:
+                return await run_blocking(self._install, path, archive=True, expected_version=version)
+        finally:
+            path.unlink(missing_ok=True)

@@ -4,23 +4,20 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import shutil
 import socket
-import tempfile
-import time
-import uuid
-import zipfile
 from pathlib import Path
 
 import httpx
 
 from . import __version__
 from ..config import AppConfig, ConfigError, _atomic_write_json
-from .locking import DirectoryLease
 from .manager import LauncherManager, ProcessSlot
-from .versions import VersionStore, extract_checked
+from .versions import VersionStore, VERSION_RE
+from .restore_service import RestoreService
+from .async_utils import run_blocking
+from .catalog import CatalogReader, collect_snapshot
+from .instance_storage import bind_runtime
 from .self_update import LauncherUpdater
-from .paths import identity_path, is_within, relative_storage_path, require_portable_relative
 
 DEFAULT_SETTINGS = {"close_to_tray": True, "autostart": False,
                     "autostart_hidden": False, "restore_instances": False}
@@ -31,12 +28,21 @@ class DesktopManager(LauncherManager):
         super().__init__(root, project)
         self.versions = VersionStore(self.root)
         self.updater = LauncherUpdater(self.root)
-        self.version_lock = asyncio.Lock()
+        self.catalog = CatalogReader(self.root)
+        self.restorer = RestoreService(self, self.versions)
 
     def settings(self) -> dict:
         path = self.root / "settings.json"
         raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        if not isinstance(raw, dict) or any(type(raw[key]) is not bool for key in DEFAULT_SETTINGS if key in raw):
+            raise ConfigError("设置文件格式错误，请修复 settings.json 后再保存设置")
         return {key: raw.get(key, default) for key, default in DEFAULT_SETTINGS.items()}
+
+    def metadata(self, instance_id: str) -> dict:
+        row = super().metadata(instance_id)
+        if not isinstance(row.get("version"), str) or not VERSION_RE.fullmatch(row["version"]):
+            raise ConfigError(f"实例 {instance_id} 的运行版本清单缺失或无效，请修复 instance.json")
+        return row
 
     def save_settings(self, values: dict) -> dict:
         if set(values) - set(DEFAULT_SETTINGS) or any(type(v) is not bool for v in values.values()):
@@ -59,7 +65,7 @@ class DesktopManager(LauncherManager):
                 else:
                     raise ConfigError("上次升级进程尚未退出，请稍后重启启动器")
                 state = json.loads(journal.read_text(encoding="utf-8"))
-                await asyncio.to_thread(self._rollback, row["id"], self._backup_path(state["backup"]))
+                await run_blocking(self.restorer.rollback, row["id"], self.restorer.backup_path(state["backup"]))
         saved = self.root / "running.json"
         ids = json.loads(saved.read_text(encoding="utf-8")).get("instances", []) if saved.exists() else []
         if self.settings()["restore_instances"]:
@@ -88,25 +94,23 @@ class DesktopManager(LauncherManager):
         await super().stop(instance_id)
         self._remember_running()
 
+    async def restart(self, instance_id: str):
+        try:
+            await super().restart(instance_id)
+        finally:
+            self._remember_running()
+
     async def create(self, name: str, mode: str, port: int | None, version: str | None = None):
-        version = version or self.default_version()
-        project = self.versions.resolve(version)
-        row = await super().create(name, mode, port)
-        row["version"] = version
-        directory = self.directory(row["id"])
-        self._bind_version(directory, project)
-        _atomic_write_json(directory / "instance.json", row)
-        return row
+        async with self.versions.lock, self.guard:
+            version = self.default_version() if version is None else version
+            project = self.versions.resolve(version)
+            return self._create_instance(name, mode, port, project, version)
 
     @staticmethod
     def _bind_version(directory: Path, project: Path):
         config_path = directory / "config.json"
         config = json.loads(config_path.read_text(encoding="utf-8-sig"))
-        try:
-            helper = os.path.relpath(project / "vendor" / "helper", directory)
-        except ValueError:
-            helper = str(project / "vendor" / "helper")
-        config["driver"]["helper_root"] = helper
+        bind_runtime(config, directory, project)
         _atomic_write_json(config_path, config)
 
     def _launch_parameters(self, instance_id: str):
@@ -163,122 +167,36 @@ class DesktopManager(LauncherManager):
         return row
 
     def backups(self):
-        rows = []
-        for path in sorted((self.root / "backups").glob("*.zip"), reverse=True):
-            try:
-                with zipfile.ZipFile(path) as archive:
-                    row = json.loads(archive.read("instance.json"))
-                rows.append({"name": path.name, "size": path.stat().st_size,
-                             "instance_name": row["name"], "version": row.get("version", "未知")})
-            except (ValueError, KeyError, zipfile.BadZipFile):
-                rows.append({"name": path.name, "size": path.stat().st_size,
-                             "instance_name": "损坏的备份", "version": "未知", "invalid": True})
-        return rows
+        return self.catalog.backups()
 
     def archives(self):
-        rows = []
-        for path in sorted((self.root / "archive").glob("*/instance.json")):
-            row = json.loads(path.read_text(encoding="utf-8"))
-            rows.append({**row, "archive_name": path.parent.name})
-        return rows
+        return self.catalog.archives()
 
-    def _backup_path(self, name: str) -> Path:
-        if not isinstance(name, str) or Path(name).name != name or "\\" in name or ":" in name:
-            raise ConfigError("备份名称无效")
-        path = self.root / "backups" / name
-        if not path.is_file() or not is_within(path, self.root / "backups"):
-            raise ConfigError("备份不存在")
-        return path
+    def referenced_versions(self) -> set[str]:
+        rows = self.rows() + self.archives()
+        if any(row.get("invalid") for row in rows):
+            raise ConfigError("归档清单损坏，无法确认版本引用；请先修复归档后再替换或删除版本")
+        return {row["version"] for row in rows}
 
-    def _read_restore(self, source: Path, stage: Path) -> dict:
-        extract_checked(source, stage)
-        try:
-            row = json.loads((stage / "instance.json").read_text(encoding="utf-8"))
-            config = AppConfig.load(stage / "config.json")
-        except (OSError, ValueError, TypeError, KeyError) as error:
-            raise ConfigError("备份缺少有效的实例配置") from error
-        self.versions.resolve(row.get("version"))
-        if row.get("mode") not in ("mock", "helper"):
-            raise ConfigError("备份驱动无效")
-        for path in (config.storage.data_dir, config.storage.media_dir):
-            if not is_within(path, stage):
-                raise ConfigError("备份数据目录必须位于实例目录内")
-        return row
+    async def remove_version(self, version: str):
+        async with self.versions.lock:
+            await run_blocking(self.versions.remove, version, self.referenced_versions())
 
     async def restore(self, name: str | None = None, *, path: str | Path | None = None):
-        source = Path(path) if path is not None else self._backup_path(name)
-        async with self.guard, self.version_lock:
-            staging = self.root / ".staging"
-            staging.mkdir(exist_ok=True)
-            with tempfile.TemporaryDirectory(prefix="restore-", dir=staging) as temporary:
-                stage = Path(temporary)
-                row = await VersionStore._thread(self._read_restore, source, stage)
-                instance_id = uuid.uuid4().hex
-                directory = self.directory(instance_id)
-                port = next((p for p in range(5100, 65000) if self.available(p)), None)
-                self.validate_port(port)
-                row.update(id=instance_id, name=self.validate_name(row["name"][:74] + " · 恢复"), port=port,
-                           created_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"))
-                config_path = stage / "config.json"
-                config = json.loads(config_path.read_text(encoding="utf-8-sig"))
-                config["webui"].update(host="127.0.0.1", port=port)
-                config["driver"]["type"] = row["mode"]
-                # Normalize paths to the new instance, never retain old absolutes.
-                for key in ("data_dir", "media_dir"):
-                    config["storage"][key] = relative_storage_path(stage / config["storage"][key], stage)
-                _atomic_write_json(config_path, config)
-                _atomic_write_json(stage / "instance.json", row)
-                self._bind_version(stage, self.versions.resolve(row["version"]))
-                # Rebind again at final location because staging depth differs.
-                (stage / "launcher.lock").unlink(missing_ok=True)
-                (stage / "upgrade.json").unlink(missing_ok=True)
-                stage.rename(directory)
-                self._bind_version(directory, self.versions.resolve(row["version"]))
-                return row
+        return await self.restorer.restore(name, path=path)
 
     async def restore_archive(self, archive_name: str):
-        if Path(archive_name).name != archive_name or "\\" in archive_name or ":" in archive_name:
-            raise ConfigError("归档名称无效")
-        source = self.root / "archive" / archive_name
-        if not source.is_dir() or identity_path(source).parent != identity_path(self.root / "archive"):
-            raise ConfigError("归档不存在")
-        with tempfile.TemporaryDirectory(prefix="archive-", dir=self.root) as temporary:
-            package = Path(temporary) / "restore.zip"
-            def pack():
-                with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as output:
-                    for item in source.rglob("*"):
-                        require_portable_relative(item.relative_to(source))
-                        if item.is_file() and item != source / "launcher.lock":
-                            if not is_within(item, source):
-                                raise ConfigError("归档包含越界链接")
-                            output.write(item, item.relative_to(source))
-            await VersionStore._thread(pack)
-            return await self.restore(path=package)
-
-    def _rollback(self, instance_id: str, backup: Path):
-        directory = self.directory(instance_id)
-        with tempfile.TemporaryDirectory(prefix="rollback-", dir=self.root) as temporary:
-            stage = Path(temporary) / "restored"
-            stage.mkdir()
-            self._read_restore(backup, stage)
-            damaged = Path(temporary) / "replaced"
-            directory.rename(damaged)
-            try:
-                stage.rename(directory)
-            except BaseException:
-                damaged.rename(directory)
-                raise
-        self._bind_version(directory, self.versions.resolve(self.metadata(instance_id)["version"]))
+        return await self.restorer.restore_archive(archive_name)
 
     async def upgrade(self, instance_id: str, version: str):
         slot = self.slots.setdefault(instance_id, ProcessSlot())
-        async with self.version_lock, slot.lock:
+        async with self.versions.lock, slot.lock:
             self.require_stopped(instance_id)
             row = self.metadata(instance_id)
             project = self.versions.resolve(version)
             if row["version"] == version:
                 raise ConfigError("实例已经使用该版本")
-            backup = await VersionStore._thread(self._backup, instance_id)
+            backup = await run_blocking(self._backup, instance_id)
             directory = self.directory(instance_id)
             _atomic_write_json(directory / "upgrade.json", {"backup": backup, "old_version": row["version"]})
             try:
@@ -291,16 +209,23 @@ class DesktopManager(LauncherManager):
                 return {"ok": True, "version": version, "backup": backup}
             except BaseException as error:
                 await self._stop(slot)
-                await VersionStore._thread(self._rollback, instance_id, self._backup_path(backup))
+                await run_blocking(self.restorer.rollback, instance_id, self.restorer.backup_path(backup))
                 slot.state, slot.error = "stopped", f"升级失败，已回滚: {error}"
                 raise ConfigError(slot.error) from error
 
     def snapshot(self):
-        return {"instances": self.rows(), "versions": self.versions.list(), "backups": self.backups(),
-                "archives": self.archives(), "settings": self.settings(),
-                "root": str(self.root), "version": __version__}
+        sections, diagnostics = collect_snapshot({
+            "instances": self.rows, "versions": self.versions.list,
+            "backups": self.backups, "archives": self.archives, "settings": self.settings,
+        })
+        if sections["settings"] is None:
+            sections["settings"] = dict(DEFAULT_SETTINGS)
+        return {**sections, "diagnostics": diagnostics, "root": str(self.root), "version": __version__}
 
     async def close(self):
-        _atomic_write_json(self.root / "running.json", {
-            "instances": [r["id"] for r in self.rows() if r["state"] == "running"]})
-        await super().close()
+        try:
+            _atomic_write_json(self.root / "running.json", {
+                "instances": [key for key, slot in self.slots.items()
+                              if slot.process is not None and slot.process.poll() is None]})
+        finally:
+            await super().close()

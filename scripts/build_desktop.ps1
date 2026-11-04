@@ -33,6 +33,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Frontend dependency installation failed.' }
 & npm.cmd run build
 if ($LASTEXITCODE -ne 0) { throw 'Frontend verification failed.' }
 if (-not $SkipTests) {
+    & node --test src/feedback.test.mjs
+    if ($LASTEXITCODE -ne 0) { throw 'Frontend operation feedback verification failed.' }
     Push-Location -LiteralPath (Join-Path $root 'desktop/src-tauri')
     try {
         $env:WECHAT_SHELL_SMOKE_RUNTIME = Join-Path $root 'desktop/src-tauri/resources/runtime'

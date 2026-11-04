@@ -27,11 +27,14 @@
 
 | 入口 | 职责 |
 | --- | --- |
-| `desktop/src/App.tsx`、`api.ts`、`types.ts` | 桌面交互、原生命令、设置及自启显式操作标记 |
+| `desktop/src/App.tsx`、`components/`、`useWorkspace.ts`、`useInstanceLogs.ts` | 页面协调、独立功能页、共享轮询和日志生命周期 |
+| `api.ts`、`api-contract.ts`、`operation-feedback.ts` | RPC DTO 边界校验、并发反馈与终态确认 |
 | `desktop/src-tauri/src/main.rs` | RPC 权限、托盘、设置事务、目录切换和更新交接 |
 | `ipc.rs`、`windows.rs` | 隐藏管理进程、Job Object、JSON 行通信及退出 |
-| `paths.rs`、`startup_entry.rs`、`scheduler.rs`、`startup_helper.rs` | 路径身份、Run 注册、计划任务及普通权限入口 |
-| `python/wechat_onebot/launcher/desktop_manager.py`、`manager.py` | 实例生命周期、运行版本、升级回滚、备份和恢复 |
+| `autostart.rs`、`startup_entry.rs`、`scheduler.rs`、`startup_helper.rs` | 自启事务、注册表快照、系统适配与普通权限入口 |
+| `snapshot_guard.rs`、`paths.rs` | 分区诊断下的原生操作前置检查及路径身份 |
+| `python/wechat_onebot/launcher/desktop_manager.py`、`manager.py` | 应用协调与实例生命周期、每实例锁 |
+| `operations.py`、`catalog.py`、`instance_storage.py`、`restore_service.py`、`async_utils.py` | 操作路由、故障隔离目录读取、原子创建、恢复/回滚及取消安全线程执行 |
 | `versions.py`、`self_update.py` | 分离的 Bot 与 Launcher 发布来源、下载及校验 |
 | `scripts/`、`desktop/src-tauri/windows/` | 运行时合并、构建、清单、安装、更新和卸载 |
 
@@ -60,6 +63,12 @@
 | 0.8.6 | 自启修复、任务管理器入口；通过 COM/UTF-8 读取任务 XML，避免中文路径损坏 |
 | 0.8.7 | Run 路径修复、旧命令迁移、保留禁用选择、入口日志；测试兼容 8.3 临时目录别名 |
 
+## 开发中修复与反馈
+
+当前源码的四项 CR 修复、并发进度、损坏条目诊断、设置草稿保留、目录/更新前置检查均未打入新的正式 Release。新增模块见上表。网络下载不占版本库发布锁；创建、恢复、升级和删除通过版本库锁保护引用关系，实例启停使用各实例锁。还原配置的最终路径绑定在发布前完成。
+
+复查补齐每次操作的关联 ID、目录切换与设置共用原生事务锁、缺失清单的故障诊断、ZIP 解码异常隔离及重复取消时的线程等待。关闭管理服务按拥有的进程句柄收尾，不依赖已损坏的磁盘清单。当前开发验证为 150 项 Python、22 项前端、19 项 Rust 单元和 5 项进程集成测试通过，具体环境与边界见[验收指南](desktop-verification.md)。
+
 ## 验证证据与剩余事项
 
 v0.8.7 的 [Windows CI 41754065459](https://github.com/PorkLittleHamburger/wechatbot-launcher/actions/runs/41754065459) 成功：123 项 Python、10 项 Rust 单元、5 项集成测试通过。另有管理员权限的两个隔离任务回归、普通权限入口请求独立高权限程序的验证。安装器解包通过，1,395 个运行时文件哈希匹配，新工作空间不自动装 Bot，手动导入通过；旧版 0.8.6 更新模块已从正式发布源发现、下载并校验新版。
@@ -74,7 +83,7 @@ v0.8.7 的 [Windows CI 41754065459](https://github.com/PorkLittleHamburger/wecha
 
 ## 完成与交付要求
 
-最新的[防御性编程与模块边界 CR](CODE_REVIEW.md)记录了三项 P2 和一项 P3 的隔离复现，以及前端/后端拆分建议。问题尚未修复；后续接手应先检查是否已有对应修复提交，不能将审查记录当成已完成的重构。
+最新的[防御性编程与模块边界 CR](CODE_REVIEW.md)记录了三项 P2 和一项 P3 的隔离复现，以及前端/后端拆分建议。四项问题已在开发代码修复，尚未发布。原始发现与修复状态分开保留；新接手应核对实际 HEAD，不把 v0.8.7 安装包当成包含这些修复。
 
 每次变更后核对所有受影响文档，尤其 README、使用说明及本页。同步版本、默认值、命令、模式和限制；首页保持通用，历史结果注明版本与来源。验证链接及命令语法后提交推送，再确认远端 README 与提交内容一致。推送成功不能代替 CI 或真实安装验证。
 

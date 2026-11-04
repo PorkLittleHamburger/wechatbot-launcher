@@ -46,6 +46,10 @@ Review changes for unnecessary fallbacks, null checks, duplicate validation, bro
 
 Keep UI presentation, transport DTOs, application operations, persistence, runtime packaging, and Windows integration in modules with explicit interfaces and one clear owner for state, locks, errors, and rollback. Avoid cross-domain private helper calls and inheritance that splits one transaction across partially committed steps. Lock the resource being changed; unrelated downloads must not block lifecycle commands. Extract cohesive modules when responsibilities diverge, without speculative layers or generic abstractions. Reviewers must distinguish reproducible defects from maintainability suggestions, cite triggers and code evidence, and verify failure paths before recommending removal of a guard. Record unresolved findings in the handoff and update affected documentation. A review request alone does not authorize a broad refactor or release.
 
+## Operation Feedback
+
+User-facing operations must distinguish pending, confirmed success, failure, cancellation, empty results, and read failures. Provide operation-specific messages, actionable error context, and visible prerequisites for disabled actions. Correlate concurrent progress by operation and resource ID; only confirm success after the complete RPC/Windows transaction finishes. Keep failed settings drafts and never write diagnostic defaults back over damaged persisted data.
+
 ## Commit & Pull Request Guidelines
 
 Use concise, imperative subjects with `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, or `chore:` prefixes. Pull requests should explain behavior changes, verify commands, linked issues, and UI screenshots when applicable. Never commit credentials, workspace data, generated runtimes, or installer artifacts. Push verified changes; create a GitHub Release only after explicit approval.

@@ -10,18 +10,23 @@ from pathlib import Path
 from ..config import ConfigError
 from .desktop_manager import DesktopManager
 from .locking import DirectoryLease
+from .operations import DesktopOperations, MESSAGES
 
 
 class Dispatcher:
     def __init__(self, manager: DesktopManager, emit=lambda value: None):
         self.manager = manager
         self.emit = emit
-        self.mutations = asyncio.Lock()
+        self.operations = DesktopOperations(manager)
 
     async def dispatch(self, method: str, params: dict | None = None):
-        params = params or {}
+        params = {} if params is None else params
         if not isinstance(params, dict):
             raise ConfigError("请求参数必须是对象")
+        params = dict(params)
+        operation_id = params.pop("_operation_id", None)
+        if operation_id is not None and (not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 128):
+            raise ConfigError("操作关联标识无效")
         manager = self.manager
         instance_id = params.get("id")
         if method == "snapshot":
@@ -34,10 +39,6 @@ class Dispatcher:
             return await manager.versions.releases()
         if method == "launcher_update_check":
             return await manager.updater.check()
-        if method == "launcher_update_download":
-            return await manager.updater.download(params.get("version"), lambda message, progress: self.emit({
-                "event": "operation-progress", "data": {
-                    "operation": method, "message": message, "progress": progress}}))
         if method == "launcher_update_prepare_install":
             return await manager.updater.prepare_install()
         if method == "logs":
@@ -54,52 +55,24 @@ class Dispatcher:
             if (directory / raw["storage"]["data_dir"] / "webui-auth.json").exists():
                 raise ConfigError("实例已设置管理密码，请使用密码登录")
             return {"token": raw["webui"]["access_token"]}
-        async with self.mutations:
-            self.emit({"event": "operation-progress", "data": {
-                "operation": method, "message": "正在处理", "progress": 0}})
-            result = await self._mutate(method, params)
-            self.emit({"event": "operation-progress", "data": {
-                "operation": method, "message": "操作完成", "progress": 100}})
-            return result
-
-    async def _mutate(self, method: str, p: dict):
-        manager, instance_id = self.manager, p.get("id")
-        if method == "settings_set":
-            return manager.save_settings(p)
-        if method == "create":
-            return await manager.create(p.get("name"), p.get("mode", "helper"), p.get("port"), p.get("version"))
-        if method == "update":
-            await manager.update(instance_id, p.get("name"), p.get("port"))
-        elif method == "start":
-            await manager.start(instance_id)
-        elif method == "stop":
-            await manager.stop(instance_id)
-        elif method == "restart":
-            await manager.stop(instance_id)
-            await manager.start(instance_id)
-        elif method == "archive":
-            await manager.archive(instance_id)
-        elif method == "backup":
-            return {"name": await manager.backup(instance_id)}
-        elif method == "restore":
-            return await manager.restore(p.get("name"), path=p.get("path"))
-        elif method == "restore_archive":
-            return await manager.restore_archive(p.get("archive_name"))
-        elif method == "upgrade":
-            return await manager.upgrade(instance_id, p.get("version"))
-        elif method == "version_import":
-            referenced_versions = {r["version"] for r in manager.rows() + manager.archives()}
-            return await manager.versions.import_archive(
-                Path(p["path"]), replace=True, referenced_versions=referenced_versions)
-        elif method == "version_download":
-            return await manager.versions.download(p.get("version"), lambda message, progress: self.emit({
-                "event": "operation-progress", "data": {"operation": method, "message": message, "progress": progress}}))
-        elif method == "version_remove":
-            referenced = {r["version"] for r in manager.rows() + manager.archives()}
-            manager.versions.remove(p.get("version"), referenced)
-        else:
+        if method not in MESSAGES:
             raise ConfigError(f"不支持的管理方法: {method}")
-        return {"ok": True}
+        start, success = MESSAGES[method]
+        def progress(message, value=None, phase="progress"):
+            self.emit({"event": "operation-progress", "data": {
+                "operation": method, "id": instance_id or params.get("version"), "operation_id": operation_id,
+                "message": message, "progress": value, "phase": phase}})
+        progress(start, 0, "start")
+        try:
+            result = await self.operations.execute(method, params, progress)
+        except asyncio.CancelledError:
+            progress("操作已取消；清理和正在执行的文件步骤已结束", None, "cancelled")
+            raise
+        except Exception as error:
+            progress(f"操作失败：{error}", None, "error")
+            raise
+        progress(success, 100, "success")
+        return result
 
 
 async def serve(root: Path, project: Path):

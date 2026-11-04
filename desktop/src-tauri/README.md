@@ -119,7 +119,8 @@ settings, every save reconciles a current-user Run entry and an on-demand task v
 `--autostart --workspace <root>`. Task names include the current SID and a stable
 workspace hash. An existing task must match this application's Source, user SID,
 and executable before replacement/deletion. No legacy service task is touched.
-Task changes preserve/restore prior task XML on failure; Python settings are
+`autostart.rs` owns the single task/registry transaction; `scheduler.rs` only
+implements system queries and mutations. Task changes preserve/restore prior task XML on failure; Python settings are
 rolled back if task configuration fails. Any rollback failure is reported too.
 Compilation does not register application autostart. Full builds also run isolated
 registry/task tests; elevated tests create and clean up test tasks, while a
@@ -169,3 +170,19 @@ Use offline Mock backends for shell QA. UAC prompts, Task Scheduler behavior,
 NSIS flows and tray interactions require separate Windows desktop acceptance.
 Real WeChat bridging is validated separately. See the
 [acceptance guide](../../docs/desktop-verification.md) for the procedure.
+
+
+Development snapshots can include `diagnostics: [{section, message}]`. Failures in
+unrelated catalogs remain visible without blocking the whole snapshot. Native
+`snapshot_guard` rejects workspace changes/installer handoff if the instances
+section failed, and rejects settings writes/reconciliation when settings could
+not be read; empty fallback arrays/defaults are never evidence of a safe state.
+
+Operation progress includes `operation`, resource `id`, and `phase`
+(`start`, `progress`, `success`, `error`, `cancelled`). The frontend waits for the
+full native RPC before confirming success, including Windows settings changes.
+The frontend supplies a per-attempt `_operation_id` in RPC params; Dispatcher
+removes this transport metadata before invoking business operations and echoes
+it as `operation_id` on progress events. Resource IDs alone do not isolate retries.
+Workspace changes share the settings transaction lock with autostart writes and
+startup reconciliation, preventing independent snapshots from racing.

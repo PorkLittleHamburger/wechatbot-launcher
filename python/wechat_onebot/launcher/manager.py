@@ -19,6 +19,8 @@ import httpx
 
 from ..config import ConfigError, _atomic_write_json, default_config
 from .locking import DirectoryLease
+from .instance_storage import bind_runtime, publish_instance
+from .async_utils import run_blocking
 from .paths import identity_path, is_within, process_path, relative_storage_path, require_portable_relative
 
 
@@ -45,7 +47,7 @@ class LauncherManager:
         self.closing = False
 
     def directory(self, instance_id: str) -> Path:
-        if not re.fullmatch(r"[a-f0-9]{32}", instance_id):
+        if not isinstance(instance_id, str) or not re.fullmatch(r"[a-f0-9]{32}", instance_id):
             raise ConfigError("实例 ID 无效")
         path = self.instances / instance_id
         # Refuse junction/symlink escapes too.
@@ -58,7 +60,7 @@ class LauncherManager:
         if not path.is_file():
             raise ConfigError("实例不存在")
         value = json.loads(path.read_text(encoding="utf-8"))
-        if value.get("id") != instance_id or value.get("mode") not in ("mock", "helper"):
+        if not isinstance(value, dict) or value.get("id") != instance_id or value.get("mode") not in ("mock", "helper"):
             raise ConfigError("实例清单损坏")
         self.validate_port(value.get("port"))
         return value
@@ -67,6 +69,8 @@ class LauncherManager:
         result = []
         for path in sorted(self.instances.iterdir()):
             if not (path / "instance.json").is_file():
+                if path.is_dir() and re.fullmatch(r"[a-f0-9]{32}", path.name):
+                    raise ConfigError(f"实例清单缺失：{path.name}/instance.json；无法确认实例状态")
                 continue
             row = self.metadata(path.name)
             slot = self.slots.setdefault(path.name, ProcessSlot())
@@ -89,6 +93,10 @@ class LauncherManager:
             result.append({**row, "state": slot.state,
                            "pid": slot.process.pid if slot.process else None,
                            "error": slot.error, "url": f"http://127.0.0.1:{row['port']}/"})
+        seen = {row["id"] for row in result}
+        if any(slot.process is not None and slot.process.poll() is None and instance_id not in seen
+               for instance_id, slot in self.slots.items()):
+            raise ConfigError("运行中实例目录或清单缺失，无法确认实例状态")
         return result
 
     def validate_port(self, port):
@@ -109,36 +117,32 @@ class LauncherManager:
 
     async def create(self, name: str, mode: str, port: int | None) -> dict:
         async with self.guard:
-            if self.closing:
-                raise ConfigError("启动器正在关闭")
-            name = self.validate_name(name)
-            if mode not in ("mock", "helper"):
-                raise ConfigError("驱动仅支持 mock 或 helper")
-            if port is None:
-                port = next((p for p in range(5100, 65000) if self.available(p)), None)
-            self.validate_port(port)
-            if not self.available(port):
-                raise ConfigError("端口已被实例或其他程序占用")
-            instance_id = uuid.uuid4().hex
-            directory = self.directory(instance_id)
-            directory.mkdir()
-            row = {"id": instance_id, "name": name, "mode": mode, "port": port,
-                   "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
-            config = default_config()
-            config["webui"]["port"] = port
-            helper_root = self.project / "vendor" / "helper"
-            try:
-                helper_path = os.path.relpath(helper_root, directory)
-            except ValueError:  # Windows external data directory on another drive.
-                helper_path = str(helper_root)
-            config["driver"].update(type=mode, helper_root=helper_path)
-            try:
-                _atomic_write_json(directory / "config.json", config)
-                _atomic_write_json(directory / "instance.json", row)
-            except BaseException:
-                shutil.rmtree(directory)
-                raise
-            return row
+            return self._create_instance(name, mode, port, self.project)
+
+    def _create_instance(self, name: str, mode: str, port: int | None,
+                         project: Path, version: str | None = None) -> dict:
+        if self.closing:
+            raise ConfigError("启动器正在关闭")
+        name = self.validate_name(name)
+        if mode not in ("mock", "helper"):
+            raise ConfigError("驱动仅支持 mock 或 helper")
+        if port is None:
+            port = next((p for p in range(5100, 65000) if self.available(p)), None)
+        self.validate_port(port)
+        if not self.available(port):
+            raise ConfigError("端口已被实例或其他程序占用")
+        instance_id = uuid.uuid4().hex
+        directory = self.directory(instance_id)
+        row = {"id": instance_id, "name": name, "mode": mode, "port": port,
+               "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+        if version is not None:
+            row["version"] = version
+        config = default_config()
+        config["webui"]["port"] = port
+        config["driver"]["type"] = mode
+        bind_runtime(config, directory, project)
+        publish_instance(directory, row, config)
+        return row
 
     @staticmethod
     def validate_name(name):
@@ -263,19 +267,21 @@ class LauncherManager:
             await self._stop(slot)
             slot.error = ""
 
+    async def restart(self, instance_id: str):
+        self.metadata(instance_id)
+        slot = self.slots.setdefault(instance_id, ProcessSlot())
+        async with slot.lock:
+            await self._stop(slot)
+            await self._start_locked(instance_id, slot)
+
     async def backup(self, instance_id: str) -> str:
         slot = self.slots.setdefault(instance_id, ProcessSlot())
         async with slot.lock:
             self.metadata(instance_id)
             self.require_stopped(instance_id)
             lease = DirectoryLease(self.directory(instance_id), create=False)
-            task = asyncio.create_task(asyncio.to_thread(self._backup, instance_id))
             try:
-                return await asyncio.shield(task)
-            except asyncio.CancelledError:
-                # Cancelling an await does not cancel a filesystem thread.
-                await task
-                raise
+                return await run_blocking(self._backup, instance_id)
             finally:
                 lease.close()
 
@@ -349,4 +355,7 @@ class LauncherManager:
 
     async def close(self):
         self.closing = True
-        await asyncio.gather(*(self.stop(row["id"]) for row in self.rows()))
+        async def stop_owned(slot):
+            async with slot.lock:
+                await self._stop(slot)
+        await asyncio.gather(*(stop_owned(slot) for slot in self.slots.values()))

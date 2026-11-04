@@ -18,6 +18,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+
 from wechat_onebot.config import AppConfig, ConfigError
 
 
@@ -1119,3 +1120,282 @@ async def test_absolute_local_storage_archive_restore_preserves_archived_data(de
     assert tree_bytes(directory) == archived_files
     assert desktop.archives() == [archived]
     assert desktop.rows()[0]["state"] == "stopped"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("params", [[], False, 0, "", ["invalid"]])
+async def test_dispatcher_rejects_falsey_non_object_params(metadata_desktop, params):
+    from wechat_onebot.launcher.supervisor import Dispatcher
+    before = metadata_desktop.settings()
+    with pytest.raises(ConfigError, match="对象"):
+        await Dispatcher(metadata_desktop).dispatch("settings_set", params)
+    assert metadata_desktop.settings() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["config", "manifest", "publish"])
+async def test_creation_publishes_complete_instance_or_nothing(metadata_desktop, monkeypatch, failure):
+    from wechat_onebot.launcher import instance_storage
+    original_write, original_rename = instance_storage._atomic_write_json, Path.rename
+    observed = []
+    def write(path, value):
+        observed.append(metadata_desktop.rows())
+        if path.name == ("config.json" if failure == "config" else "instance.json") and failure != "publish":
+            raise OSError("simulated write failure")
+        return original_write(path, value)
+    def rename(path, target):
+        if path.name.startswith("create-"):
+            assert metadata_desktop.rows() == []
+            assert json.loads((path / "instance.json").read_text())["version"] == "0.8.0"
+            assert (path / "config.json").is_file()
+            raise OSError("simulated publish failure")
+        return original_rename(path, target)
+    monkeypatch.setattr(instance_storage, "_atomic_write_json", write)
+    if failure == "publish":
+        monkeypatch.setattr(Path, "rename", rename)
+    with pytest.raises(OSError, match="simulated"):
+        await metadata_desktop.create("Atomic create", "mock", free_port(), "0.8.0")
+    assert all(rows == [] for rows in observed)
+    assert metadata_desktop.rows() == []
+    assert list((metadata_desktop.root / ".staging").iterdir()) == []
+
+
+@pytest.mark.parametrize("content", ["{", "[]", "null", "{}"])
+def test_corrupt_catalog_entry_is_visible_without_breaking_snapshot(metadata_desktop, content):
+    folder = metadata_desktop.root / "archive" / "damaged"
+    folder.mkdir(parents=True)
+    (folder / "instance.json").write_text(content, encoding="utf-8")
+    backups = metadata_desktop.root / "backups"
+    backups.mkdir()
+    with zipfile.ZipFile(backups / "damaged.zip", "w") as package:
+        package.writestr("instance.json", content)
+    snap = metadata_desktop.snapshot()
+    assert snap["instances"] == []
+    assert snap["versions"][0]["version"] == "0.8.0"
+    for section in ("archives", "backups"):
+        assert snap[section][0]["invalid"] is True
+        assert snap[section][0]["error"]
+    with pytest.raises(ConfigError, match="引用"):
+        metadata_desktop.referenced_versions()
+
+
+def test_snapshot_reports_section_read_failure_and_preserves_settings_file(metadata_desktop):
+    settings = metadata_desktop.root / "settings.json"
+    settings.write_text('{"autostart":"false"}', encoding="utf-8")
+    snap = metadata_desktop.snapshot()
+    assert {d["section"] for d in snap["diagnostics"]} == {"settings"}
+    assert snap["versions"] and snap["instances"] == []
+    with pytest.raises(ConfigError, match="设置文件"):
+        metadata_desktop.save_settings({"autostart": True})
+    assert settings.read_text() == '{"autostart":"false"}'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_network_download_does_not_block_create_or_stop(metadata_desktop, bundle_factory, tmp_path, monkeypatch, cancel):
+    from wechat_onebot.launcher.supervisor import Dispatcher
+    package = zip_bundle(bundle_factory("0.9.0"), tmp_path / "download.zip").read_bytes()
+    entered, release = asyncio.Event(), asyncio.Event()
+    class Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            entered.set()
+            await release.wait()
+            yield package
+    async def releases():
+        return {"releases": [{"version": "0.9.0", "compatible": True,
+                              "download_url": "https://example.test/runtime.zip", "size": len(package)}]}
+    real_client = httpx.AsyncClient
+    def client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(lambda request: httpx.Response(200, stream=Stream()))
+        return real_client(*args, **kwargs)
+    monkeypatch.setattr(metadata_desktop.versions, "releases", releases)
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    events = []
+    dispatcher = Dispatcher(metadata_desktop, events.append)
+    task = asyncio.create_task(dispatcher.dispatch("version_download", {"version": "0.9.0"}))
+    await asyncio.wait_for(entered.wait(), 2)
+    try:
+        row = await asyncio.wait_for(dispatcher.dispatch("create", {"name": "Unblocked", "mode": "mock", "version": "0.8.0"}), 2)
+        await asyncio.wait_for(dispatcher.dispatch("stop", {"id": row["id"]}), 2)
+        assert not task.done()
+    finally:
+        if cancel:
+            task.cancel()
+        release.set()
+        if cancel:
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            await task
+    if not cancel:
+        assert metadata_desktop.versions.resolve("0.9.0").is_dir()
+    assert list((metadata_desktop.root / "downloads").iterdir()) == []
+    phases = [e["data"]["phase"] for e in events if e["data"]["operation"] == "version_download"]
+    assert phases[0] == "start" and phases[-1] == ("cancelled" if cancel else "success")
+
+
+@pytest.mark.asyncio
+async def test_version_replacement_rechecks_references_after_lock(metadata_desktop, bundle_factory, tmp_path):
+    from wechat_onebot.launcher.supervisor import Dispatcher
+    bundle = tmp_path / "replacement-source"
+    shutil.copytree(metadata_desktop.versions.resolve("0.8.0"), bundle)
+    (bundle / "webui/index.html").write_text("replacement", encoding="utf-8")
+    write_manifest(bundle)
+    archive = zip_bundle(bundle, tmp_path / "replacement.zip")
+    dispatcher = Dispatcher(metadata_desktop)
+    async with metadata_desktop.versions.lock:
+        create = asyncio.create_task(metadata_desktop.create("Reference owner", "mock", free_port(), "0.8.0"))
+        await asyncio.sleep(0)
+        install = asyncio.create_task(dispatcher.dispatch("version_import", {"path": str(archive)}))
+        await asyncio.sleep(0)
+        assert not create.done() and not install.done()
+    row = await create
+    with pytest.raises(ConfigError, match="引用"):
+        await install
+    assert metadata_desktop.metadata(row["id"])["version"] == "0.8.0"
+    assert (metadata_desktop.versions.resolve("0.8.0") / "webui/index.html").read_text() != "replacement"
+
+
+@pytest.mark.asyncio
+async def test_operation_failure_emits_terminal_event(metadata_desktop):
+    from wechat_onebot.launcher.supervisor import Dispatcher
+    events = []
+    with pytest.raises(ConfigError):
+        await Dispatcher(metadata_desktop, events.append).dispatch("create", {"name": "", "mode": "mock"})
+    assert [e["data"]["phase"] for e in events] == ["start", "error"]
+    assert events[-1]["data"]["progress"] is None
+
+
+@pytest.mark.parametrize("section,catalog", [("archives", "archive"), ("backups", "backups")])
+def test_unreadable_catalog_reports_diagnostic_instead_of_empty_success(metadata_desktop, monkeypatch, section, catalog):
+    original = metadata_desktop.catalog._entries
+    def entries(name):
+        if name == catalog:
+            raise PermissionError("catalog access denied")
+        return original(name)
+    monkeypatch.setattr(metadata_desktop.catalog, "_entries", entries)
+    snap = metadata_desktop.snapshot()
+    assert snap[section] == []
+    assert snap["diagnostics"] == [{"section": section, "message": "catalog access denied"}]
+    assert snap["versions"][0]["version"] == "0.8.0"
+
+
+@pytest.mark.asyncio
+async def test_restore_binding_failure_does_not_publish_or_change_source(metadata_desktop, monkeypatch):
+    from wechat_onebot.launcher import restore_service
+    row = await metadata_desktop.create("Source", "mock", free_port(), "0.8.0")
+    name = await metadata_desktop.backup(row["id"])
+    source = metadata_desktop.root / "backups" / name
+    before = tree_bytes(metadata_desktop.directory(row["id"]))
+    package = source.read_bytes()
+    def fail_binding(*args):
+        raise OSError("restore binding failure")
+    monkeypatch.setattr(restore_service, "bind_runtime", fail_binding)
+    with pytest.raises(OSError, match="restore binding failure"):
+        await metadata_desktop.restore(name)
+    assert [r["id"] for r in metadata_desktop.rows()] == [row["id"]]
+    assert tree_bytes(metadata_desktop.directory(row["id"])) == before
+    assert source.read_bytes() == package
+    assert list((metadata_desktop.root / ".staging").iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_progress_operation_id_is_transport_metadata_not_settings(metadata_desktop):
+    from wechat_onebot.launcher.supervisor import Dispatcher
+    events = []
+    dispatcher = Dispatcher(metadata_desktop, events.append)
+    params = {"close_to_tray": False, "_operation_id": "settings-attempt-1"}
+    result = await dispatcher.dispatch("settings_set", params)
+    assert result["close_to_tray"] is False and "_operation_id" not in result
+    assert params["_operation_id"] == "settings-attempt-1"
+    assert all(event["data"]["operation_id"] == "settings-attempt-1" for event in events)
+    events.clear()
+    with pytest.raises(ConfigError):
+        await dispatcher.dispatch("settings_set", {"close_to_tray": "bad", "_operation_id": "settings-attempt-2"})
+    assert events[-1]["data"]["phase"] == "error"
+    assert all(event["data"]["operation_id"] == "settings-attempt-2" for event in events)
+    assert metadata_desktop.settings()["close_to_tray"] is False
+
+
+def test_missing_manifest_is_not_an_empty_instance_list(metadata_desktop):
+    folder = metadata_desktop.instances / ("a" * 32)
+    folder.mkdir()
+    snap = metadata_desktop.snapshot()
+    assert snap["instances"] == []
+    assert any(d["section"] == "instances" and "清单缺失" in d["message"] for d in snap["diagnostics"])
+    with pytest.raises(ConfigError, match="清单缺失"):
+        metadata_desktop.referenced_versions()
+
+
+@pytest.mark.asyncio
+async def test_legacy_partial_instance_reports_version_diagnostic(metadata_desktop):
+    row = await metadata_desktop.create("Legacy partial", "mock", free_port(), "0.8.0")
+    path = metadata_desktop.directory(row["id"]) / "instance.json"
+    del row["version"]
+    path.write_text(json.dumps(row), encoding="utf-8")
+    snap = metadata_desktop.snapshot()
+    assert any(d["section"] == "instances" and "运行版本清单" in d["message"] for d in snap["diagnostics"])
+
+
+def test_missing_directory_with_owned_process_is_not_an_empty_workspace(metadata_desktop):
+    from types import SimpleNamespace
+    from wechat_onebot.launcher.manager import ProcessSlot
+    key = "b" * 32
+    metadata_desktop.slots[key] = ProcessSlot(state="running", process=SimpleNamespace(poll=lambda: None))
+    try:
+        assert metadata_desktop.snapshot()["diagnostics"][0]["section"] == "instances"
+        with pytest.raises(ConfigError, match="清单缺失"):
+            metadata_desktop.referenced_versions()
+    finally:
+        metadata_desktop.slots.pop(key)
+
+
+@pytest.mark.parametrize("kind", ["encrypted", "unsupported_compression"])
+def test_unsupported_zip_metadata_stays_a_visible_invalid_backup(metadata_desktop, kind):
+    import io
+    import struct
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("instance.json", '{}')
+    data = bytearray(stream.getvalue())
+    local, central = data.index(b"PK\x03\x04"), data.index(b"PK\x01\x02")
+    if kind == "encrypted":
+        struct.pack_into("<H", data, local + 6, 1)
+        struct.pack_into("<H", data, central + 8, 1)
+    else:
+        struct.pack_into("<H", data, local + 8, 99)
+        struct.pack_into("<H", data, central + 10, 99)
+    folder = metadata_desktop.root / "backups"
+    folder.mkdir()
+    (folder / "unsupported.zip").write_bytes(data)
+    snap = metadata_desktop.snapshot()
+    assert snap["backups"][0]["invalid"] and snap["backups"][0]["error"]
+    assert snap["versions"] and not snap["diagnostics"]
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancel_keeps_filesystem_lock_until_thread_finishes():
+    import threading
+    from wechat_onebot.launcher.async_utils import run_blocking
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    lock = asyncio.Lock()
+    def work():
+        entered.set()
+        release.wait(5)
+        finished.set()
+    async def operation():
+        async with lock:
+            await run_blocking(work)
+    task = asyncio.create_task(operation())
+    await asyncio.wait_for(asyncio.to_thread(entered.wait), 2)
+    try:
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert lock.locked() and not task.done() and not finished.is_set()
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert finished.is_set() and not lock.locked()
