@@ -292,7 +292,7 @@ test('success feedback for start and restart still requires manually starting th
 
 // Exercise component handlers and rerenders with local hook state and a native RPC stub.
 const interactionBundle = await build({
-  stdin: { contents: `export { SettingsPage } from './components/SettingsPage'; export { InstancesPage } from './components/InstancesPage'; export { beginRender, reset } from 'react'; export { calls, setFailure } from '@tauri-apps/api/core';`, resolveDir: fileURLToPath(new URL('.', import.meta.url)) },
+  stdin: { contents: `export { SettingsPage } from './components/SettingsPage'; export { InstancesPage } from './components/InstancesPage'; export { RecoveryPage } from './components/RecoveryPage'; export { beginRender, reset } from 'react'; export { calls, setFailure } from '@tauri-apps/api/core';`, resolveDir: fileURLToPath(new URL('.', import.meta.url)) },
   plugins: [{ name: 'isolated-component-state', setup(build) {
     build.onResolve({ filter: /^react$/ }, () => ({ path: 'hooks', namespace: 'fixture' }));
     build.onResolve({ filter: /^@tauri-apps\/api\/core$/ }, () => ({ path: 'native', namespace: 'fixture' }));
@@ -305,7 +305,7 @@ const interactionBundle = await build({
     ` : `
       export const calls = []; let failure = false;
       export function setFailure(value) { failure = value; }
-      export async function invoke(command, args) { calls.push({command, args}); if (failure) throw new Error('settings write failed'); return args.params; }
+      export async function invoke(command, args) { calls.push({command, args}); if (failure) throw new Error('settings write failed'); if (args.method === 'backup_delete') return { ok: true }; if (args.method === 'restore') return { id: 'restored', name: 'restored', version: '0.9.3' }; return args.params; }
     ` }));
   } }], bundle: true, write: false, platform: 'node', format: 'esm', jsx: 'automatic',
 });
@@ -317,6 +317,60 @@ function elements(tree) {
 }
 const paint = (component, props) => { interactive.beginRender(); return component(props); };
 const control = (tree, title) => elements(tree).find(e => e.type === 'input' && e.props['aria-label'] === title);
+
+test('damaged backups cannot restore but can be deleted from RecoveryPage', () => {
+  const tree = paint(interactive.RecoveryPage, { workspace: workspace({ backups: [{ name: '损坏备份.zip', size: 0, invalid: true, error: 'ZIP 损坏' }] }), confirm() {} });
+  const buttons = elements(tree).filter(e => e.type === 'button');
+  assert.equal(buttons.length, 2);
+  assert.equal(buttons[0].props.children, '无法恢复');
+  assert.equal(buttons[0].props.disabled, true);
+  assert.match(buttons[0].props.title, /ZIP 损坏/);
+  assert.equal(buttons[1].props.children, '删除备份');
+  assert.equal(buttons[1].props.disabled, false);
+});
+
+test('backup restore and delete share the resource busy key without blocking other backups', () => {
+  const backups = [{ name: 'active.zip', size: 1 }, { name: 'other.zip', size: 1 }];
+  for (const invalid of [false, true]) {
+    const tree = paint(interactive.RecoveryPage, { workspace: workspace({ backups: [{ ...backups[0], invalid }, backups[1]] }, new Set(['restore:active.zip'])), confirm() {} });
+    const buttons = elements(tree).filter(e => e.type === 'button');
+    assert.deepEqual(buttons.map(button => button.props.disabled), [true, true, false, false]);
+    assert.equal(buttons[0].props.children, '处理中…');
+    assert.match(buttons[1].props.title, /正在操作/);
+  }
+});
+
+test('backup confirmation carries the exact filename, shared key, operation and deferred RPC', async () => {
+  interactive.setFailure(false);
+  const name = '测试备份 2026-11-12.zip';
+  const confirmations = [];
+  const tree = paint(interactive.RecoveryPage, { workspace: workspace({ backups: [{ name, size: 1 }] }), confirm: (...args) => confirmations.push(args) });
+  const buttons = elements(tree).filter(e => e.type === 'button');
+  for (const [index, method, title] of [[0, 'restore', '恢复备份'], [1, 'backup_delete', '删除备份']]) {
+    const count = interactive.calls.length;
+    buttons[index].props.onClick();
+    assert.equal(interactive.calls.length, count, 'clicking must open confirmation before any mutation RPC');
+    const [actualTitle, text, key, action, scope] = confirmations.at(-1);
+    assert.equal(actualTitle, title);
+    assert.ok(text.includes(name));
+    assert.equal(key, `restore:${name}`);
+    assert.deepEqual(scope, { operation: method });
+    if (method === 'backup_delete') {
+      assert.match(text, /不可撤销/);
+      assert.match(text, /不会删除实例或实例数据/);
+    }
+    const operationId = batch(method);
+    await action(operationId);
+    assert.deepEqual(interactive.calls.at(-1), { command: 'rpc', args: { method, params: { name, _operation_id: operationId } } });
+  }
+});
+
+test('backup_delete contract accepts only confirmed ok true', () => {
+  validateResult('backup_delete', { ok: true });
+  for (const invalid of [{ ok: false }, {}, { ok: 'true' }, { ok: 1 }, null, undefined, false]) {
+    assert.throws(() => validateResult('backup_delete', invalid), /backup_delete.*无法确认操作成功/);
+  }
+});
 
 test('settings interactions preserve restore choice across prerequisite changes, polling, failed save and retry', async () => {
   interactive.reset();
@@ -403,4 +457,195 @@ test('unsupported displays backend upgrade and instance switch advice without co
   assert.match(html, /不支持桥接恢复/);
   assert.ok(html.includes(error));
   assert.doesNotMatch(html, /当前运行版本不支持自动恢复，请打开 WebUI/);
+});
+
+// Run the production workspace hook, including effects/cleanup and native progress,
+// with the same isolated hook approach as the component harness above.
+const workspaceBundle = await build({
+  stdin: { contents: `export { useWorkspace } from './useWorkspace'; export { beginRender, flushEffects, reset, unmount } from 'react'; export { emitProgress } from '@tauri-apps/api/event';`, resolveDir: fileURLToPath(new URL('.', import.meta.url)) },
+  plugins: [{ name: 'workspace-hook-state', setup(build) {
+    build.onResolve({ filter: /^react$/ }, () => ({ path: 'hooks', namespace: 'workspace' }));
+    build.onResolve({ filter: /^@tauri-apps\/api\/(core|event)$/ }, args => ({ path: args.path.endsWith('/event') ? 'event' : 'native', namespace: 'workspace' }));
+    build.onLoad({ filter: /.*/, namespace: 'workspace' }, args => ({ contents: args.path === 'hooks' ? `
+      let slots = [], cursor = 0, effects = [];
+      export function beginRender() { cursor = 0; }
+      export function reset() { slots = []; cursor = 0; effects = []; }
+      export function useState(initial) {
+        const index = cursor++;
+        if (!(index in slots)) slots[index] = typeof initial === 'function' ? initial() : initial;
+        return [slots[index], next => { slots[index] = typeof next === 'function' ? next(slots[index]) : next; }];
+      }
+      export function useRef(initial) { const index = cursor++; return slots[index] ??= { current: initial }; }
+      function changed(old, deps) { return !old || deps.some((value, index) => !Object.is(value, old.deps[index])); }
+      export function useCallback(fn, deps) {
+        const index = cursor++;
+        if (changed(slots[index], deps)) slots[index] = { deps, fn };
+        return slots[index].fn;
+      }
+      export function useEffect(fn, deps) {
+        const index = cursor++;
+        if (changed(slots[index], deps)) {
+          const old = slots[index];
+          slots[index] = { deps, cleanup: old?.cleanup };
+          effects.push(() => { old?.cleanup?.(); slots[index].cleanup = fn(); });
+        }
+      }
+      export function flushEffects() { const pending = effects; effects = []; pending.forEach(fn => fn()); }
+      export function unmount() { slots.forEach(slot => slot?.cleanup?.()); effects = []; }
+    ` : args.path === 'event' ? `
+      let handler;
+      export async function listen(_name, callback) { handler = callback; return () => { if (handler === callback) handler = undefined; }; }
+      export function emitProgress(payload) { handler?.({ payload }); }
+    ` : `export async function invoke() { return ${JSON.stringify(snapshot)}; }` }));
+  } }], bundle: true, write: false, platform: 'node', format: 'esm',
+});
+const hook = await import(`data:text/javascript;base64,${Buffer.from(workspaceBundle.outputFiles[0].text).toString('base64')}`);
+const deferred = () => {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+};
+async function workspaceHarness(t) {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  hook.reset();
+  const paint = () => { hook.beginRender(); const value = hook.useWorkspace(); hook.flushEffects(); return value; };
+  t.after(() => hook.unmount());
+  const settle = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+  const tick = async ms => { t.mock.timers.tick(ms); await settle(); return paint(); };
+  paint(); await settle();
+  return { paint, tick, settle };
+}
+
+test('workspace keeps pending through backend success and starts five seconds only after the complete RPC', async t => {
+  const { paint, tick } = await workspaceHarness(t);
+  const rpc = deferred();
+  let operationId;
+  const work = paint().run('settings', '保存设置', id => { operationId = id; return rpc.promise; }, undefined, { operation: 'settings_set' });
+  hook.emitProgress({ operation_id: operationId, operation: 'settings_set', phase: 'success', message: 'Python 写入成功', progress: 100 });
+  let state = await tick(60000);
+  assert.equal(state.feedback[0].pending, true);
+  assert.equal(state.feedback[0].phase, 'progress');
+  assert.equal(state.busy.has('settings'), true);
+  assert.match(state.feedback[0].message, /等待完整操作确认/);
+  rpc.resolve({ ok: true }); assert.equal(await work, true);
+  state = await tick(4999);
+  assert.equal(state.feedback[0].phase, 'success');
+  assert.equal(state.feedback[0].pending, false);
+  assert.equal((await tick(1)).feedback.length, 0);
+});
+
+test('workspace polling, late events and concurrent completions do not reset per-operation deadlines', async t => {
+  const { paint, tick } = await workspaceHarness(t);
+  await paint().run('a', 'A', async () => true, undefined, { operation: 'stop' });
+  const first = paint().feedback[0];
+  await tick(3000);
+  await paint().run('b', 'B', async () => false);
+  hook.emitProgress({ operation_id: first.operationId, operation: 'stop', phase: 'success', message: '迟到成功' });
+  await paint().refresh();
+  assert.equal((await tick(1999)).feedback.length, 2);
+  let state = await tick(1);
+  assert.deepEqual(state.feedback.map(row => [row.key, row.phase]), [['b', 'cancelled']]);
+  assert.equal((await tick(2999)).feedback.length, 1);
+  assert.equal((await tick(1)).feedback.length, 0);
+});
+
+test('workspace backend success followed by native RPC failure stays an error indefinitely', async t => {
+  const { paint, tick } = await workspaceHarness(t);
+  const rpc = deferred();
+  let id;
+  const work = paint().run('settings', '保存设置', operationId => { id = operationId; return rpc.promise; }, undefined, { operation: 'settings_set' });
+  hook.emitProgress({ operation_id: id, operation: 'settings_set', phase: 'success', message: 'Python 已保存' });
+  assert.equal((await tick(60000)).feedback[0].pending, true);
+  rpc.reject(new Error('Windows 自启事务失败并已回滚'));
+  assert.equal(await work, false);
+  hook.emitProgress({ operation_id: id, operation: 'settings_set', phase: 'success', message: '迟到成功' });
+  const state = await tick(60000);
+  assert.equal(state.feedback[0].phase, 'error');
+  assert.equal(state.feedback[0].pending, false);
+  assert.match(state.feedback[0].message, /Windows 自启事务失败并已回滚/);
+  assert.equal(state.errors.length, 1);
+});
+
+test('workspace errors remain visible and backend cancellation waits for RPC before dismissal', async t => {
+  const { paint, tick } = await workspaceHarness(t);
+  const rpc = deferred();
+  let id;
+  const work = paint().run('cancel', '取消', operationId => { id = operationId; return rpc.promise; }, undefined, { operation: 'restore' });
+  hook.emitProgress({ operation_id: id, operation: 'restore', phase: 'cancelled', message: '后台取消' });
+  let state = await tick(60000);
+  assert.equal(state.feedback[0].pending, true);
+  assert.equal(state.feedback[0].phase, 'cancelled');
+  rpc.resolve(true); assert.equal(await work, false);
+  await paint().run('error', '失败', async () => { throw new Error('Windows 事务失败'); });
+  const backend = deferred();
+  let failureId;
+  const failure = paint().run('backend', '后台失败', operationId => { failureId = operationId; return backend.promise; }, undefined, { operation: 'start' });
+  hook.emitProgress({ operation_id: failureId, operation: 'start', phase: 'error', message: '后台失败原因' });
+  backend.resolve(true); assert.equal(await failure, false);
+  state = await tick(5000);
+  assert.deepEqual(state.feedback.map(row => row.phase), ['error', 'error']);
+  state = await tick(60000);
+  assert.equal(state.feedback.length, 2);
+  assert.match(state.errors[0].message, /Windows 事务失败/);
+});
+
+test('workspace manual dismissal and old deadlines cannot remove a newer attempt of the same key', async t => {
+  const { paint, tick } = await workspaceHarness(t);
+  await paint().run('same', '旧操作', async () => true);
+  const oldClose = paint().dismissFeedback;
+  await tick(1000);
+  const next = deferred();
+  const work = paint().run('same', '新操作', () => next.promise);
+  oldClose('same');
+  assert.equal(paint().feedback[0].pending, true);
+  next.resolve(true); await work;
+  oldClose('same');
+  assert.equal(paint().feedback[0].label, '新操作');
+  assert.equal((await tick(4000)).feedback.length, 1);
+  paint().dismissFeedback('same');
+  assert.equal(paint().feedback.length, 0);
+  await paint().run('same', '第三次', async () => true);
+  assert.equal((await tick(1000)).feedback[0].label, '第三次');
+  assert.equal((await tick(4000)).feedback.length, 0);
+});
+
+test('workspace confirmation handoff disappears without a fabricated success or timer', async t => {
+  const { paint, tick } = await workspaceHarness(t);
+  assert.equal(await paint().run('confirm', '待确认', async () => 'confirmation'), false);
+  assert.equal((await tick(60000)).feedback.length, 0);
+});
+
+test('workspace notices expire after five seconds and replacement or manual close clears their timer', async t => {
+  const { paint, tick } = await workspaceHarness(t);
+  paint().setNotice('令牌已复制'); paint();
+  assert.equal((await tick(4999)).notice, '令牌已复制');
+  assert.equal((await tick(1)).notice, '');
+  paint().setNotice('已取消'); paint();
+  await tick(3000);
+  paint().setNotice('已撤销设置修改'); paint();
+  assert.equal((await tick(2000)).notice, '已撤销设置修改');
+  paint().setNotice(''); paint();
+  paint().setNotice('新提示'); paint();
+  assert.equal((await tick(4999)).notice, '新提示');
+  assert.equal((await tick(1)).notice, '');
+});
+
+test('workspace unmount clears feedback and notice timers and ignores an unfinished RPC', async t => {
+  const { paint } = await workspaceHarness(t);
+  await paint().run('done', '已完成', async () => true);
+  paint().setNotice('短提示'); paint();
+  const pending = deferred();
+  const work = paint().run('pending', '未完成', () => pending.promise);
+  const originalSetTimeout = globalThis.setTimeout;
+  // Observe replacement feedback/notice callbacks without relying on Node internals.
+  let firedAfterUnmount = 0;
+  globalThis.setTimeout = (...args) => originalSetTimeout(() => { firedAfterUnmount++; args[0](); }, args[1]);
+  t.after(() => { globalThis.setTimeout = originalSetTimeout; });
+  // Replace completed rows while the observer is installed so their timers are tracked.
+  await paint().run('done', '重新完成', async () => true);
+  paint().setNotice('替换提示'); paint();
+  hook.unmount();
+  pending.resolve(true); assert.equal(await work, false);
+  t.mock.timers.tick(60000);
+  assert.equal(firedAfterUnmount, 0);
 });

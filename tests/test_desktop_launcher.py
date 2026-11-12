@@ -27,6 +27,108 @@ PROJECT = Path(os.environ["WECHAT_RUNTIME_SOURCE"]).resolve()
 MANIFEST = "VERSION_MANIFEST.json"
 
 
+async def test_backup_delete_rpc_removes_only_selected_backup(metadata_desktop):
+    from wechat_onebot.launcher.supervisor import Dispatcher
+    manager = metadata_desktop
+    row = await manager.create("Delete backup", "mock", free_port())
+    name = await manager.backup(row["id"])
+    before = tree_bytes(manager.directory(row["id"]))
+    events = []
+    result = await Dispatcher(manager, events.append).dispatch("backup_delete", {"name": name, "_operation_id": "delete-test"})
+    assert result == {"ok": True}
+    assert not (manager.root / "backups" / name).exists()
+    assert manager.backups() == []
+    assert tree_bytes(manager.directory(row["id"])) == before
+    assert [event["data"]["phase"] for event in events] == ["start", "success"]
+    with pytest.raises(ConfigError, match="不存在"):
+        await manager.delete_backup(name)
+
+
+async def test_delete_damaged_backup_and_reject_unrelated_files(metadata_desktop):
+    manager = metadata_desktop
+    folder = manager.root / "backups"
+    folder.mkdir()
+    (folder / "broken.zip").write_bytes(b"not a ZIP")
+    assert manager.backups()[0]["invalid"]
+    await manager.delete_backup("broken.zip")
+    sentinel = folder / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    for name in [None, "", "../keep.txt", "..\\keep.txt", str(sentinel), "keep.txt"]:
+        with pytest.raises(ConfigError):
+            await manager.delete_backup(name)
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+async def test_backup_delete_rejects_redirected_backup_folder(metadata_desktop):
+    manager = metadata_desktop
+    other = manager.root / "other"
+    other.mkdir()
+    sentinel = other / "keep.zip"
+    sentinel.write_bytes(b"unrelated workspace file")
+    try:
+        (manager.root / "backups").symlink_to(other, target_is_directory=True)
+    except OSError:
+        pytest.skip("Symbolic link creation requires Windows developer mode or privilege")
+    with pytest.raises(ConfigError, match="备份目录"):
+        await manager.delete_backup("keep.zip")
+    assert sentinel.read_bytes() == b"unrelated workspace file"
+
+
+async def test_backup_delete_protects_upgrade_journal_and_reports_permission(metadata_desktop, monkeypatch):
+    manager = metadata_desktop
+    row = await manager.create("Rollback", "mock", free_port())
+    name = await manager.backup(row["id"])
+    journal = manager.directory(row["id"]) / "upgrade.json"
+    journal.write_text(json.dumps({"backup": name}), encoding="utf-8")
+    with pytest.raises(ConfigError, match="回滚"):
+        await manager.delete_backup(name)
+    if os.name == "nt":
+        with pytest.raises(ConfigError, match="回滚"):
+            await manager.delete_backup(name.upper())
+    journal.write_text("[]", encoding="utf-8")
+    with pytest.raises(ConfigError, match="恢复记录"):
+        await manager.delete_backup(name)
+    journal.unlink()
+    source = manager.root / "backups" / name
+    unlink = Path.unlink
+    def denied(path, *args, **kwargs):
+        if path == source:
+            raise PermissionError("offline permission denied")
+        return unlink(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "unlink", denied)
+    with pytest.raises(ConfigError, match="权限或占用"):
+        await manager.delete_backup(name)
+    assert source.is_file()
+
+
+async def test_backup_delete_waits_for_active_restore(metadata_desktop, monkeypatch):
+    import threading
+    manager = metadata_desktop
+    row = await manager.create("Concurrent restore", "mock", free_port())
+    name = await manager.backup(row["id"])
+    entered, release = threading.Event(), threading.Event()
+    read = manager.restorer._read_restore
+    def delayed(source, stage):
+        entered.set()
+        assert release.wait(5)
+        assert source.is_file()
+        return read(source, stage)
+    monkeypatch.setattr(manager.restorer, "_read_restore", delayed)
+    restore = asyncio.create_task(manager.restore(name))
+    delete = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        delete = asyncio.create_task(manager.delete_backup(name))
+        await asyncio.sleep(0.02)
+        assert not delete.done()
+    finally:
+        release.set()
+        await restore
+        if delete is not None:
+            await delete
+    assert not (manager.root / "backups" / name).exists()
+
+
 def write_manifest(directory, version="0.8.0", **overrides):
     files = {p.relative_to(directory).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
              for p in directory.rglob("*") if p.is_file() and p.name != MANIFEST}

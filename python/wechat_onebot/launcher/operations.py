@@ -17,6 +17,7 @@ MESSAGES = {
     "stop": ("正在停止实例并等待进程退出", "实例已停止"),
     "restart": ("正在停止旧进程并重新启动实例", "实例已重新启动"),
     "backup": ("正在备份，请勿移动实例目录", "备份已完成，可在备份恢复页面查看"),
+    "backup_delete": ("正在删除备份文件", "备份已删除，实例数据保持不变"),
     "restore": ("正在校验并恢复备份", "已恢复为新实例，当前保持停止"),
     "restore_archive": ("正在校验并恢复归档", "归档已恢复为新实例，原归档仍保留"),
     "archive": ("正在归档实例", "实例已归档，可在备份恢复页面恢复"),
@@ -51,6 +52,8 @@ class DesktopOperations:
             await manager.archive(instance_id)
         elif method == "backup":
             return {"name": await manager.backup(instance_id)}
+        elif method == "backup_delete":
+            await manager.delete_backup(p.get("name"))
         elif method == "restore":
             return await manager.restore(p.get("name"), path=p.get("path"))
         elif method == "restore_archive":

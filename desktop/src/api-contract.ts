@@ -26,7 +26,7 @@ export function validateResult(method: string, result: unknown): void {
       case 'launcher_update_check': valid = text(result.current_version) && (result.release === null || record(result.release) && text(result.release.version) && typeof result.release.notes === 'string' && text(result.release.url)); break;
       case 'launcher_update_download': valid = text(result.version) && text(result.path) && typeof result.sha256 === 'string' && /^[a-f0-9]{64}$/i.test(result.sha256) && typeof result.size === 'number' && result.size > 0; break;
       case 'upgrade': valid = result.ok === true && text(result.version); break;
-      case 'start': case 'stop': case 'restart': case 'update': case 'archive': case 'version_remove': valid = result.ok === true; break;
+      case 'start': case 'stop': case 'restart': case 'update': case 'archive': case 'version_remove': case 'backup_delete': valid = result.ok === true; break;
     }
   }
   if (!valid) throw new Error(`${method} 返回结果不完整或格式错误，无法确认操作成功；请刷新状态后重试。`);

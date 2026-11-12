@@ -6,6 +6,8 @@ export interface Feedback {
   pending: boolean; phase: Phase; message: string; detail?: string; progress?: number | null;
 }
 export const terminal = (phase: Phase) => ['success', 'error', 'cancelled'].includes(phase);
+export const FEEDBACK_DISMISS_MS = 5000;
+export const autoDismissFeedback = (row: Feedback) => !row.pending && (row.phase === 'success' || row.phase === 'cancelled');
 
 // Resource IDs identify what is changed; operation IDs isolate each attempt, including retries.
 // Ignore legacy events without an operation ID: the complete RPC still supplies the result.

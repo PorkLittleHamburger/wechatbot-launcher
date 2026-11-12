@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { messageOf, rpc } from './api';
 import type { OperationProgress, Snapshot } from './types';
-import { applyProgress, finishFeedback, type Feedback } from './operation-feedback';
+import { applyProgress, autoDismissFeedback, FEEDBACK_DISMISS_MS, finishFeedback, type Feedback } from './operation-feedback';
 export type ErrorEntry = { id: number; label: string; message: string; retry?: () => void };
 export function useWorkspace() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -15,9 +15,23 @@ export function useWorkspace() {
   const [notice, setNotice] = useState('');
   const [feedback, setFeedback] = useState<Feedback[]>([]);
   const feedbackRef = useRef<Feedback[]>([]);
+  const feedbackTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const updateFeedback = useCallback((change: (rows: Feedback[]) => Feedback[]) => {
+    if (!mounted.current) return;
     feedbackRef.current = change(feedbackRef.current);
-    if (mounted.current) setFeedback(feedbackRef.current);
+    // Reconcile by attempt, retaining deadlines through polling and unrelated operations.
+    const eligible = new Set(feedbackRef.current.filter(autoDismissFeedback).map(row => row.operationId));
+    for (const [id, timer] of feedbackTimers.current) {
+      if (!eligible.has(id)) { clearTimeout(timer); feedbackTimers.current.delete(id); }
+    }
+    for (const id of eligible) {
+      if (feedbackTimers.current.has(id)) continue;
+      feedbackTimers.current.set(id, setTimeout(() => {
+        feedbackTimers.current.delete(id);
+        updateFeedback(rows => rows.filter(row => row.operationId !== id));
+      }, FEEDBACK_DISMISS_MS));
+    }
+    setFeedback(feedbackRef.current);
   }, []);
   const snapshotRef = useRef<Promise<void> | null>(null);
   const refreshAgain = useRef(false);
@@ -77,8 +91,17 @@ export function useWorkspace() {
     let timer: ReturnType<typeof setTimeout>;
     const tick = async () => { await refresh(); if (!cancelled) timer = setTimeout(tick, 2000); };
     void tick();
-    return () => { mounted.current = false; cancelled = true; clearTimeout(timer); };
+    return () => {
+      mounted.current = false; cancelled = true; clearTimeout(timer);
+      for (const timer of feedbackTimers.current.values()) clearTimeout(timer);
+      feedbackTimers.current.clear();
+    };
   }, [refresh]);
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(''), FEEDBACK_DISMISS_MS);
+    return () => clearTimeout(timer);
+  }, [notice]);
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
@@ -88,7 +111,11 @@ export function useWorkspace() {
   }, [updateFeedback]);
 
   return { snapshot, setSnapshot, connected, refreshing, busy, errors, setErrors, notice, setNotice,
-    feedback, dismissFeedback: (key: string) => updateFeedback(rows => rows.filter(row => row.key !== key || row.pending)),
+    feedback, dismissFeedback: (key: string) => {
+      // Capture the rendered attempt: an old close handler must not dismiss a retry.
+      const id = feedback.find(row => row.key === key && !row.pending)?.operationId;
+      if (id) updateFeedback(rows => rows.filter(row => row.operationId !== id));
+    },
     refresh, run, report, mounted };
 }
 export type Workspace = ReturnType<typeof useWorkspace>;

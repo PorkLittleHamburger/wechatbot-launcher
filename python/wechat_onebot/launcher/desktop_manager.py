@@ -19,6 +19,7 @@ from .catalog import CatalogReader, collect_snapshot
 from .instance_storage import bind_runtime
 from .self_update import LauncherUpdater
 from .bridge_status import read_bridge_status
+from .paths import identity_path
 
 DEFAULT_SETTINGS = {"close_to_tray": True, "autostart": False,
                     "autostart_hidden": False, "restore_instances": False, "restore_bridges": False}
@@ -181,6 +182,32 @@ class DesktopManager(LauncherManager):
 
     def backups(self):
         return self.catalog.backups()
+
+    async def delete_backup(self, name: str):
+        # Restore/upgrade hold this same transaction lock while reading backups.
+        async with self.versions.lock, self.guard:
+            path = self.restorer.backup_path(name)
+            folder = self.root / "backups"
+            if (path.suffix.lower() != ".zip" or path.is_symlink()
+                    or identity_path(folder) != identity_path(self.root) / "backups"):
+                raise ConfigError("只能删除当前工作空间备份目录中的 ZIP 文件")
+            for instance in self.instances.iterdir():
+                journal = instance / "upgrade.json"
+                if not journal.exists():
+                    continue
+                try:
+                    state = json.loads(journal.read_text(encoding="utf-8"))
+                    backup = state["backup"]
+                    if not isinstance(backup, str):
+                        raise ValueError("备份名称无效")
+                except (OSError, ValueError, KeyError, TypeError) as error:
+                    raise ConfigError("升级恢复记录无法读取，请先完成恢复后再删除备份") from error
+                if identity_path(folder / backup) == identity_path(path):
+                    raise ConfigError("该备份用于未完成升级的回滚，请先重启启动器完成恢复")
+            try:
+                path.unlink()
+            except OSError as error:
+                raise ConfigError(f"删除备份失败，请检查文件权限或占用：{error}") from error
 
     def archives(self):
         return self.catalog.archives()
