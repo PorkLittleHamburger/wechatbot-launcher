@@ -4,6 +4,18 @@
 
 ## 自动化检查
 
+### 未发布：真实 WebView2 窗口 smoke
+
+Windows 上从仓库根目录执行（需构建工具链和前端资源）：
+
+```powershell
+cargo rustc --locked --manifest-path desktop/src-tauri/Cargo.toml --example instance_webview_smoke -- -C link-arg=/MANIFEST:EMBED -C "link-arg=/MANIFESTINPUT:$((Resolve-Path desktop/src-tauri/windows/debug.manifest).Path)"
+```
+
+以普通权限运行 Cargo 输出目录内的 `debug/examples/instance_webview_smoke.exe <绝对报告文件路径>`，等待退出并检查报告 `Ok(())`。该 opt-in 程序使用独立、每进程唯一应用标识，不启动管理服务或微信，不调用自启插件。它在随机本地 HTTP 端口提供测试页面，创建主窗口及两实例窗口，重复打开已有窗口，切换端口，再销毁并重建；测试浏览器数据保留在独立 smoke 标识目录。嵌入 Windows 清单是必需条件，否则独立 example 可能在入口加载阶段退出。
+
+2026-11-12 本机真实 WebView2 smoke 通过，但旧代码同类 smoke 也通过，未精确重现用户的 `0x80010108`；不能代替目标安装上的最终复测。
+
 ### 0.8.9 桥接恢复的离线回归
 
 将 `WECHAT_RUNTIME_SOURCE` 指向包含恢复协议 v1 的 Bot 源码，执行 `python -m pytest -q tests/test_bridge_resume.py tests/test_desktop_launcher.py`。前者检查显式自启门槛、旧能力、认证健康状态、状态读取故障和并发倒序响应；后者使用真实 Mock worker 检查自动恢复、保存停止意图、无目标、手动重启以及崩溃后升级不携带恢复参数。旧 Bot 源码会跳过需要新控制器的用例，不能据此声称验证了新能力。

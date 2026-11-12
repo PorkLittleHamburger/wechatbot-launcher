@@ -11,10 +11,11 @@ mod snapshot_guard;
 mod startup_entry;
 mod windows;
 mod updater;
+mod instance_window;
 
 use serde_json::{json, Value};
 use std::{path::PathBuf, sync::{Arc, atomic::{AtomicBool, Ordering}}};
-use tauri::{Manager, Emitter, WebviewWindow, WebviewUrl};
+use tauri::{Manager, Emitter, WebviewWindow};
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
@@ -24,6 +25,7 @@ struct Shell {
     root: PathBuf,
     startup_helper: PathBuf,
     settings: Mutex<()>,
+    instance_windows: Arc<Mutex<()>>,
     autostart_error: Mutex<Option<String>>,
     update_gate: RwLock<()>,
     exiting: AtomicBool,
@@ -120,20 +122,17 @@ async fn open_instance(window: WebviewWindow, app: tauri::AppHandle, state: taur
     if row.get("id").and_then(Value::as_str) != Some(instance_id.as_str()) || row.get("state").and_then(Value::as_str) != Some("running") { return Err("Instance is not running".into()); }
     let url: tauri::Url = row.get("url").and_then(Value::as_str).ok_or("Instance has no URL")?.parse().map_err(|e| format!("Invalid instance URL: {e}"))?;
     if url.scheme() != "http" || url.host_str() != Some("127.0.0.1") || url.port().is_none() || !url.username().is_empty() || url.password().is_some() { return Err("Instance URL must use HTTP on 127.0.0.1 with an explicit port".into()); }
-    let label = format!("instance-{instance_id}");
-    if let Some(existing) = app.get_webview_window(&label) {
-        existing.navigate(url).map_err(|e| e.to_string())?;
-        existing.show().map_err(|e| e.to_string())?;
-        existing.set_focus().map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-    // No capability matches this label, and no remote origins receive grants.
-    tauri::WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url.clone()))
-        .title("WeChat OneBot — 实例管理")
-        .inner_size(1180.0, 800.0)
-        .on_navigation(move |next| next.origin() == url.origin())
-        .build().map_err(|e| e.to_string())?;
-    Ok(())
+    let windows = state.instance_windows.clone().lock_owned().await;
+    if state.exiting.load(Ordering::Acquire) { return Err("Launcher is shutting down".into()); }
+    // A blocking worker keeps WebView2 creation out of synchronous IPC handlers.
+    // Await it under the window gate so duplicate requests cannot build one label.
+    tauri::async_runtime::spawn_blocking(move || {
+        // Cancellation of the IPC waiter must not release the creation gate early.
+        let _windows = windows;
+        if app.state::<Shell>().exiting.load(Ordering::Acquire) { return Err("Launcher is shutting down".into()); }
+        instance_window::open(&app, &instance_id, url)
+    })
+        .await.map_err(|e| format!("实例窗口任务失败：{e}"))?
 }
 
 #[tauri::command]
@@ -221,7 +220,7 @@ fn main() {
             let project = app.path().resource_dir()?.join("runtime");
             let ipc = ipc::Ipc::spawn(app.handle().clone(), &project, &options.root, options.autostart).map_err(std::io::Error::other)?;
             let hidden = options.autostart && setting(&options.root, "autostart_hidden", false);
-            app.manage(Shell { ipc: ipc.clone(), root: options.root, startup_helper: app.path().resource_dir()?.join("startup/wechat-onebot-startup.exe"), settings: Mutex::new(()), autostart_error: Mutex::new(None), update_gate: RwLock::new(()), exiting: AtomicBool::new(false), exit_complete: AtomicBool::new(false) });
+            app.manage(Shell { ipc: ipc.clone(), root: options.root, startup_helper: app.path().resource_dir()?.join("startup/wechat-onebot-startup.exe"), settings: Mutex::new(()), instance_windows: Arc::new(Mutex::new(())), autostart_error: Mutex::new(None), update_gate: RwLock::new(()), exiting: AtomicBool::new(false), exit_complete: AtomicBool::new(false) });
             let show = tauri::menu::MenuItem::with_id(app, "show", "显示启动器", true, None::<&str>)?;
             let exit = tauri::menu::MenuItem::with_id(app, "exit", "退出", true, None::<&str>)?;
             let menu = tauri::menu::Menu::with_items(app, &[&show, &exit])?;

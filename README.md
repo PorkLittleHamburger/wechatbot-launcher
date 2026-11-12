@@ -47,6 +47,8 @@ pwsh -File scripts/build_desktop.ps1
 
 ## 文档导航
 
+未发布源码已改进实例 WebUI 窗口：使用独立 WebView2 数据目录、串行创建与复用窗口，重复打开同一地址时保留当前页面。正式 v0.8.9 尚不包含此改动；详见[交接记录](docs/HANDOFF.md)。
+
 - [桌面使用与故障排查](docs/desktop-launcher.md)
 - [工具链、构建与发布](docs/building.md)
 - [验收步骤与历史验证记录](docs/desktop-verification.md)

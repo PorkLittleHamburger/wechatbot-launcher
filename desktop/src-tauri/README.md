@@ -97,6 +97,13 @@ invoke('install_launcher_update') // stopped instances and a verified installer 
 `open_instance` requests `instance_info` with `{id}` and requires a running row
 with the same ID and a `http://127.0.0.1:<port>/...` URL. It opens/focuses
 `instance-<id>`, restricts navigation to that origin, and grants no capability.
+
+Unreleased source serializes native lookup/create operations and performs creation
+on a blocking worker (never in a synchronous IPC/event handler). The worker owns
+the creation gate even if its IPC waiter disconnects. Each instance has its own
+`app_local_data_dir()/instance-webviews/<id>` browser profile; the main profile is
+not shared or deleted. Reopening the same URL restores/focuses without reloading.
+Profile separation may require signing in again once.
 This is a native-IPC boundary; it does not claim a lower Windows integrity level
 for WebView2 than the main app. A user can copy the URL into a normal browser.
 
