@@ -6,7 +6,7 @@
 
 - 仓库为 `PorkLittleHamburger/wechatbot-launcher`，只维护桌面启动器。旧对话中的共享仓库或 `WechatBot/launcher` 路径已不适合作为定位依据；先用 `git rev-parse --show-toplevel` 确认。
 - 网关、微信桥接、原生 DLL 及对应测试位于独立 `PorkLittleHamburger/wechatbot` 仓库，通过 `WECHAT_RUNTIME_SOURCE` 参与构建，不复制到启动器源码库。
-- 当前发布线：[v0.8.9](https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/tag/v0.8.9)，源码以该标签指向的提交为准；正式发布状态以 GitHub Latest 为准，后续文档提交不改写发布标签。
+- 当前发布线：[v0.8.10](https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/tag/v0.8.10)，源码以该标签指向的提交为准；正式发布状态以 GitHub Latest 为准，后续文档提交不改写发布标签。
 - [CI](../.github/workflows/desktop.yml) 固定 Bot v0.9.3 源码 `0af6c8098533e17898e0fcbd2824392e9738f20d`（恢复协议 v1）；功能基线为 `b908d4c`，后续仅同步发布说明。本地构建不会自动检出或核对提交，发布前须检查运行时源 HEAD 与工作树。v0.8.8 的历史运行时为 Bot v0.8.6 `23f46eb`。
 - 源码 HEAD、正式发布和实际安装是三种状态，必须分别确认。更新验证后提交推送；只有用户明确要求时才发布新 Release。
 
@@ -64,6 +64,7 @@
 | 0.8.7 | Run 路径修复、旧命令迁移、保留禁用选择、入口日志；测试兼容 8.3 临时目录别名 |
 | 0.8.8 | 资源锁与原子创建修复、目录故障隔离、模块拆分、操作批次反馈与自启事务协调 |
 | 0.8.9 | 显式请求桥接恢复、等待登录与停止意图状态展示、旧 worker 能力提示；修复升级意图继承与并发状态倒序覆盖 |
+| 0.8.10 | 实例 WebView2 独立数据目录、窗口串行创建/复用、取消安全门闩、端口变更重建及分阶段错误提示 |
 
 ## 0.8.8 修复与反馈
 
@@ -97,13 +98,13 @@ v0.8.7 的 [Windows CI 41754065459](https://github.com/PorkLittleHamburger/wecha
 
 ## 完成与交付要求
 
-### 2026-11-12：未发布的实例 WebView2 修复
+### 2026-11-12：0.8.10 实例 WebView2 改进
 
 用户报告 v0.8.9 打开 WebUI 时发生 `0x80010108`。Bot 侧已确认实例 HTTP 正常且 v0.9.4 下载、导入有效，不能因此认定 Bot 包损坏。`open_instance` 原本为 async 命令；Tauri 官方明确警告 Windows 同步命令创建窗口可能死锁，故不改为同步 UI 回调创建。
 
 新增 `instance_window.rs`，每实例使用 `%LOCALAPPDATA%/<应用标识>/instance-webviews/<id>` 独立浏览器目录，不复用主窗口环境；创建与复用由原生窗口门闩串行控制，门闩随阻塞任务持有，调用方取消不能提前释放。同 URL 重开只还原/显示/聚焦，不刷新登录或配置页面。实例子窗口仍没有原生 capability，导航仍限制在校验后的本地服务 origin。首次使用独立目录可能需要重新登录 WebUI，不迁移或删除旧浏览器缓存。
 
-验证：Rust 主程序 21 项、进程目标 6 项通过，两项 opt-in 未执行；真实 WebView2 隔离 smoke 覆盖主窗口存在时创建两实例、重复打开、端口变更后重建、销毁后重建。旧代码在本机同类 smoke 也通过，尚未精确重现用户 HRESULT，不能宣称根因已被唯一确定。验证没有启动 supervisor、微信或真实实例，也未更改系统自启。真实用户安装仍待升级后复测。本轮仅推送源码，不发布 Release；版本号保持 0.8.9，已发布安装器不含此改动。
+验证：Rust 主程序 21 项、进程目标 6 项通过，两项 opt-in 未执行；真实 WebView2 隔离 smoke 覆盖主窗口存在时创建两实例、重复打开、端口变更后重建、销毁后重建。旧代码在本机同类 smoke 也通过，尚未精确重现用户 HRESULT，不能宣称根因已被唯一确定。验证没有启动 supervisor、微信或真实实例，也未更改系统自启。真实用户安装仍待升级后复测。用户随后明确要求发布，0.8.10 包含上述改动；不修改现有安装、实例或 Bot v0.9.4 发布。功能提交 `ec327a2` 的 [Windows CI 43154453227](https://github.com/PorkLittleHamburger/wechatbot-launcher/actions/runs/43154453227) 已成功；发布元数据提交仍须通过完整 CI 和附件校验。
 
 最新的[防御性编程与模块边界 CR](CODE_REVIEW.md)记录了三项 P2 和一项 P3 的隔离复现，以及前端/后端拆分建议。四项问题已修复并纳入 0.8.8。原始发现与修复状态分开保留；新接手应核对实际 HEAD，不把 v0.8.7 安装包当成包含这些修复。
 

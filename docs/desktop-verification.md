@@ -4,7 +4,7 @@
 
 ## 自动化检查
 
-### 未发布：真实 WebView2 窗口 smoke
+### 0.8.10：真实 WebView2 窗口 smoke
 
 Windows 上从仓库根目录执行（需构建工具链和前端资源）：
 

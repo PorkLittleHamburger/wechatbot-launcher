@@ -47,7 +47,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed.' }
 $installer = Get-ChildItem -LiteralPath (Join-Path $env:CARGO_TARGET_DIR 'release/bundle/nsis') -Filter '*.exe' |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if (-not $installer) { throw 'No NSIS installer was produced.' }
-$destination = Join-Path $root 'dist/WeChat-OneBot-Launcher_0.8.9_x64-setup.exe'
+$destination = Join-Path $root 'dist/WeChat-OneBot-Launcher_0.8.10_x64-setup.exe'
 Copy-Item -LiteralPath $installer.FullName -Destination $destination -Force
 $hash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -LiteralPath "$destination.sha256" -Value "$hash  $([IO.Path]::GetFileName($destination))" -Encoding ascii
