@@ -6,7 +6,7 @@
 
 - 仓库为 `PorkLittleHamburger/wechatbot-launcher`，只维护桌面启动器。旧对话中的共享仓库或 `WechatBot/launcher` 路径已不适合作为定位依据；先用 `git rev-parse --show-toplevel` 确认。
 - 网关、微信桥接、原生 DLL 及对应测试位于独立 `PorkLittleHamburger/wechatbot` 仓库，通过 `WECHAT_RUNTIME_SOURCE` 参与构建，不复制到启动器源码库。
-- 当前发布线：[v0.8.10](https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/tag/v0.8.10)，源码以该标签指向的提交为准；正式发布状态以 GitHub Latest 为准，后续文档提交不改写发布标签。
+- 当前发布线：[v0.8.11](https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/tag/v0.8.11)，源码以该标签指向的提交为准；正式发布状态以 GitHub Latest 为准，后续文档提交不改写发布标签。
 - [CI](../.github/workflows/desktop.yml) 固定 Bot v0.9.3 源码 `0af6c8098533e17898e0fcbd2824392e9738f20d`（恢复协议 v1）；功能基线为 `b908d4c`，后续仅同步发布说明。本地构建不会自动检出或核对提交，发布前须检查运行时源 HEAD 与工作树。v0.8.8 的历史运行时为 Bot v0.8.6 `23f46eb`。
 - 源码 HEAD、正式发布和实际安装是三种状态，必须分别确认。更新验证后提交推送；只有用户明确要求时才发布新 Release。
 
@@ -65,6 +65,7 @@
 | 0.8.8 | 资源锁与原子创建修复、目录故障隔离、模块拆分、操作批次反馈与自启事务协调 |
 | 0.8.9 | 显式请求桥接恢复、等待登录与停止意图状态展示、旧 worker 能力提示；修复升级意图继承与并发状态倒序覆盖 |
 | 0.8.10 | 实例 WebView2 独立数据目录、窗口串行创建/复用、取消安全门闩、端口变更重建及分阶段错误提示 |
+| 0.8.11 | 备份删除确认、回滚保护、成功/取消反馈及普通通知 5 秒自动收起 |
 
 ## 0.8.8 修复与反馈
 
@@ -98,11 +99,11 @@ v0.8.7 的 [Windows CI 41754065459](https://github.com/PorkLittleHamburger/wecha
 
 ## 完成与交付要求
 
-### 2026-11-12：未发布的备份删除与反馈修复
+### 2026-11-12：0.8.11 备份删除与反馈修复
 
 备份页原先只有恢复入口，没有删除 RPC。现新增 `backup_delete(name)`、确认对话框和严格结果校验；只删除工作空间 backups 中的直接 ZIP，允许损坏包，不删除实例。删除和还原/升级共用事务锁，未完成升级 journal 引用的备份受保护；保留明确的缺失、权限/占用错误，不返回伪成功。界面恢复与删除使用同一资源 key，防止并发点击。
 
-`useWorkspace` 按 operationId 管理 5 秒反馈计时，仅在完整 RPC 结束的成功或取消状态触发；pending/error 不过期。卸载及手动关闭清理计时器，旧计时器不移除新批次操作。普通 notice 同样自动收起。已发布 v0.8.10 不含本节改动，本轮验证后仅推送源码；未操作用户真实备份或发布 Release。
+`useWorkspace` 按 operationId 管理 5 秒反馈计时，仅在完整 RPC 结束的成功或取消状态触发；pending/error 不过期。卸载及手动关闭清理计时器，旧计时器不移除新批次操作。普通 notice 同样自动收起。v0.8.11 包含本节改动，v0.8.10 及更早版本不包含。用户已明确要求发布；发布前须完整构建并校验附件，不能把源码推送当作发布。验证只使用隔离数据，不操作用户真实备份。
 
 验证：Python 全量 187 项通过；随后补充的目录符号链接回归在本机因权限跳过，删除专项为 4 通过、1 跳过。前端 45 项及 TypeScript/Vite 构建通过，覆盖真实 hook 的假时钟、RPC 未完成不收起、旧关闭回调隔离和删除确认契约。未执行实际桌面安装或用户备份删除。
 
