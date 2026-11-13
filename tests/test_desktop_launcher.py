@@ -1562,3 +1562,62 @@ async def test_repeated_cancel_keeps_filesystem_lock_until_thread_finishes():
         with pytest.raises(asyncio.CancelledError):
             await task
     assert finished.is_set() and not lock.locked()
+
+
+def _allow_helper_privilege_check(monkeypatch):
+    import ctypes
+    monkeypatch.setattr(ctypes.windll.shell32, "IsUserAnAdmin", lambda: True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows helper privilege check")
+@pytest.mark.asyncio
+async def test_helper_instance_accepts_bot_persisted_sdk_fallback(desktop, monkeypatch):
+    row = await desktop.create("SDK fallback", "helper", free_port(), version="0.8.0")
+    path = desktop.directory(row["id"]) / "config.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    # Bot 0.10.x persists its in-memory helper-to-sdk fallback; the instance
+    # manifest still reports the launcher-owned helper mode.
+    raw["driver"]["type"] = "sdk"
+    raw["driver"]["sdk_data_root"] = None
+    path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _allow_helper_privilege_check(monkeypatch)
+    assert desktop.check_config(row["id"])["mode"] == "helper"
+    raw["driver"]["type"] = "native"
+    path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="驱动"):
+        desktop.check_config(row["id"])
+
+
+@pytest.mark.asyncio
+async def test_restore_accepts_sdk_fallback_backup_and_normalizes_driver(metadata_desktop):
+    manager = metadata_desktop
+    row = await manager.create("SDK backup", "helper", free_port(), "0.8.0")
+    name = await manager.backup(row["id"])
+    source = manager.root / "backups" / name
+    with zipfile.ZipFile(source) as archive:
+        entries = {item: archive.read(item) for item in archive.namelist()}
+    config = json.loads(entries["config.json"])
+    config["driver"]["type"] = "sdk"
+    entries["config.json"] = json.dumps(config).encode()
+    with zipfile.ZipFile(source, "w") as archive:
+        for item, content in entries.items():
+            archive.writestr(item, content)
+    restored = await manager.restore(name)
+    assert restored["id"] != row["id"] and restored["mode"] == "helper"
+    restored_config = json.loads((manager.directory(restored["id"]) / "config.json").read_text(
+        encoding="utf-8"))
+    # Restoring owns the launcher mode: the stale Bot fallback must not leak into
+    # the restored instance.
+    assert restored_config["driver"]["type"] == "helper"
+    assert (manager.directory(restored["id"]) / "instance.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_check_config_reports_launcher_config_view_errors(desktop):
+    row = await desktop.create("Broken config", "mock", free_port(), version="0.8.0")
+    path = desktop.directory(row["id"]) / "config.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    del raw["storage"]
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ConfigError, match="storage"):
+        desktop.check_config(row["id"])

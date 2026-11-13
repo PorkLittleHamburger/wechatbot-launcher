@@ -8,9 +8,10 @@ import uuid
 import zipfile
 from pathlib import Path
 
-from ..config import AppConfig, ConfigError, _atomic_write_json
+from ..config import ConfigError, _atomic_write_json
 from .async_utils import run_blocking
 from .catalog import instance_record
+from .instance_config import read_instance_config
 from .instance_storage import bind_runtime
 from .manager import LauncherManager
 from .paths import identity_path, is_within, relative_storage_path, require_portable_relative
@@ -35,14 +36,14 @@ class RestoreService:
         extract_checked(source, stage)
         try:
             row = instance_record(json.loads((stage / "instance.json").read_text(encoding="utf-8")))
-            config = AppConfig.load(stage / "config.json")
+            config = read_instance_config(stage / "config.json")
         except (OSError, ValueError, TypeError, KeyError) as error:
             raise ConfigError("备份缺少有效的实例配置") from error
         self.versions.resolve(row.get("version"))
         if row.get("mode") not in ("mock", "helper"):
             raise ConfigError("备份驱动无效")
-        for path in (config.storage.data_dir, config.storage.media_dir):
-            if not is_within(path, stage):
+        for target in (config.data_dir, config.media_dir):
+            if not is_within(target, stage):
                 raise ConfigError("备份数据目录必须位于实例目录内")
         return row
 

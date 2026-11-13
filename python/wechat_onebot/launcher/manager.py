@@ -19,6 +19,7 @@ import httpx
 
 from ..config import ConfigError, _atomic_write_json, default_config
 from .locking import DirectoryLease
+from .instance_config import read_instance_config
 from .instance_storage import bind_runtime, publish_instance
 from .async_utils import run_blocking
 from .bridge_status import read_bridge_status
@@ -181,14 +182,17 @@ class LauncherManager:
     def check_config(self, instance_id: str):
         row = self.metadata(instance_id)
         directory = self.directory(instance_id)
-        raw = json.loads((directory / "config.json").read_text(encoding="utf-8-sig"))
+        config = read_instance_config(directory / "config.json")
         # Data isolation remains an invariant even after manual config changes.
-        if raw["webui"]["host"] != "127.0.0.1" or raw["webui"]["port"] != row["port"]:
+        if config.webui_host != "127.0.0.1" or config.webui_port != row["port"]:
             raise ConfigError("实例 WebUI 地址与清单不一致，请在启动器编辑端口")
-        if raw["driver"]["type"] != row["mode"]:
+        # The selected Bot version owns its driver implementation. Bot 0.10.x can
+        # persist an "sdk" fallback for a helper instance until the runtime
+        # normalizes the value again, so both known helper drivers are accepted.
+        drivers = ("helper", "sdk") if row["mode"] == "helper" else ("mock",)
+        if config.raw["driver"].get("type") not in drivers:
             raise ConfigError("实例驱动与清单不一致")
-        for key in ("data_dir", "media_dir"):
-            target = (directory / raw["storage"][key]).resolve()
+        for target in (config.data_dir, config.media_dir):
             if not is_within(target, directory):
                 raise ConfigError("实例数据路径必须位于本实例目录内")
         if row["mode"] == "helper":

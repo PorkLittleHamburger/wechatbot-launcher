@@ -34,7 +34,7 @@
 | `autostart.rs`、`startup_entry.rs`、`scheduler.rs`、`startup_helper.rs` | 自启事务、注册表快照、系统适配与普通权限入口 |
 | `snapshot_guard.rs`、`paths.rs` | 分区诊断下的原生操作前置检查及路径身份 |
 | `python/wechat_onebot/launcher/desktop_manager.py`、`manager.py` | 应用协调与实例生命周期、每实例锁 |
-| `operations.py`、`catalog.py`、`instance_storage.py`、`restore_service.py`、`async_utils.py` | 操作路由、故障隔离目录读取、原子创建、恢复/回滚及取消安全线程执行 |
+| `operations.py`、`catalog.py`、`instance_storage.py`、`instance_config.py`、`restore_service.py`、`async_utils.py` | 操作路由、故障隔离目录读取、原子创建、Launcher 侧实例配置视图、恢复/回滚及取消安全线程执行 |
 | `versions.py`、`self_update.py` | 分离的 Bot 与 Launcher 发布来源、下载及校验 |
 | `scripts/`、`desktop/src-tauri/windows/` | 运行时合并、构建、清单、安装、更新和卸载 |
 
@@ -43,6 +43,7 @@
 - 浏览器管理入口已移除；实例 WebUI 子窗口仍存在且没有桌面原生权限。
 - 安装和反复启动均不自动安装 Bot 版本。随包 Python/模块用于启动器后台；用户主动下载或导入后才能创建实例。
 - 桌面创建模式固定 Helper；Mock 仅保留在后端及隔离测试中，不是安装或界面选项。
+- 实例配置归所选 Bot 版本所有：Launcher 只通过 `instance_config.py` 读取 WebUI 地址、storage 隔离路径和 driver 对象，不按自带运行时版本解析 Bot 全量 schema。helper 实例允许 Bot 0.10.x 持久化的 `driver.type=sdk` 回退值，未知驱动类型仍拒绝；Launcher 不自动改写 `driver.type`，恢复备份时将其归一为实例 mode（0.8.12 源码，见下文）。
 - Bot 列表读取 Bot 仓库 Atom 和便携 ZIP；启动器更新读取 Launcher 仓库。避开 REST 配额不保证免于所有 HTTP 限流。
 - 默认关闭自启、隐藏自启、实例恢复和桥接恢复；关闭窗口默认隐藏到托盘。数据目录切换不会迁移数据，实例活动时禁止切换。
 - 自启为 HKCU Run → `asInvoker` 入口 → 预先授权的按需高权限任务 → 主程序。任务无登录触发器，不能绕过任务管理器禁用。Run 使用普通本地路径；仅迁移精确匹配当前安装的旧命令。
@@ -98,6 +99,24 @@ v0.8.7 的 [Windows CI 41754065459](https://github.com/PorkLittleHamburger/wecha
 静态审查另发现容量边界：ZIP 提取/恢复限制为 100,000 个条目、累计未压缩大小 8 GiB，而备份创建未预检该上限。超限备份可能创建成功后无法恢复，尚未以超大归档实测。本次仅补齐文档，不改变备份实现；后续如处理此问题，应增加创建端预检或明确的可恢复性校验。
 
 ## 完成与交付要求
+
+### 2026-11-13：Bot 0.10.x 驱动回退兼容（源码改动，未发布）
+
+用户升级 Bot 0.10.1/0.10.2 后，启动实例报「实例驱动与清单不一致」，恢复备份报「备份缺少有效的实例配置」。根因分两层：
+
+1. Bot 0.10.x 在 helper 配置下遇到不支持的微信版本（实测 4.2.0.52）会回退到 sdk，并把 `driver.type=sdk` 持久化进实例 `config.json`；Launcher 0.8.11 的 `manager.check_config` 要求 `driver.type` 等于 `instance.json` 的 `mode`（仍为 helper）。
+2. Launcher 0.8.11 内置运行时是 Bot v0.9.3（CI 固定 `0af6c80`，其配置模型只接受 helper/mock）。`desktop_manager.check_config` 与 `restore_service._read_restore` 用该模型 `AppConfig.load` 解析实例配置，遇到 sdk 即失败：启动被第一层拦下，备份恢复则被包装成「备份缺少有效的实例配置」。
+
+修复（源码，未提交发布）：
+
+- 新增 Launcher 自有只读视图 `instance_config.py`：只校验并读取 `webui` 地址、`storage.data_dir`/`media_dir` 隔离路径与 `driver` 对象，不再用自带运行时解析 Bot 全量 schema。`desktop_manager` 的 OneBot 监听端口扫描与 `restore_service` 的备份校验改用该视图。
+- `manager.check_config` 保留一致性检查但按模式限定已知集合：helper 接受 helper/sdk，mock 只接受 mock；未知驱动类型仍明确报错。Launcher 不自动改写 `driver.type`（配置归 Bot 所有）。
+- 恢复备份时仍把 `driver.type` 归一为实例 `mode`，避免旧回退值带入新实例。
+- 不新增 `mode=sdk`：sdk 是 Bot 内部回退而不是用户可选启动模式，UI 与创建流程仍固定 Helper，不扩展权限与产品契约。
+
+验证（本机，运行时固定 Bot v0.9.3 源码，与 0.8.11 打包一致）：新增 3 项回归（helper+sdk 通过启动前校验、sdk 备份可恢复且归一为 helper、配置缺少 storage 时给出明确错误）；修复前 3 项均失败，修复后全量 190 通过、1 跳过（符号链接用例需权限）。未改动 Rust/前端/Windows 代码，未跑完整构建与安装器校验，未发布。
+
+版本与迁移：计划 v0.8.12 补丁；无数据迁移。现有 sdk 配置由 Launcher 兼容读取，Bot 0.10.3 起不再持久化 sdk，两侧可独立发布。发布需用户明确请求，并按惯例完成完整 CI、解包哈希与附件校验；源码提交不等于已发布。
 
 ### 2026-11-12：0.8.11 备份删除与反馈修复
 

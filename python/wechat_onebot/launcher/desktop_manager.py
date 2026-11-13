@@ -10,7 +10,8 @@ from pathlib import Path
 import httpx
 
 from . import __version__
-from ..config import AppConfig, ConfigError, _atomic_write_json
+from ..config import ConfigError, _atomic_write_json
+from .instance_config import read_instance_config
 from .manager import LauncherManager, ProcessSlot
 from .versions import VersionStore, VERSION_RE
 from .restore_service import RestoreService
@@ -150,11 +151,11 @@ class DesktopManager(LauncherManager):
         row = super().check_config(instance_id)
         self.versions.resolve(row["version"])
         directory = self.directory(instance_id)
-        config = AppConfig.load(directory / "config.json")
+        config = read_instance_config(directory / "config.json")
         listeners = [("127.0.0.1", row["port"])]
         # Endpoints are restored independently of the bridge. Reject all listener
         # conflicts before starting any part of the instance.
-        for path in config.storage.data_dir.glob("accounts/*/onebot.json"):
+        for path in config.data_dir.glob("accounts/*/onebot.json"):
             raw = json.loads(path.read_text(encoding="utf-8-sig"))
             for key in ("httpServers", "wsServers"):
                 for endpoint in raw.get(key, []):
