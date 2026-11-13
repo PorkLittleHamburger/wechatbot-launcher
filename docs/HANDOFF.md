@@ -115,9 +115,11 @@ v0.8.7 的 [Windows CI 41754065459](https://github.com/PorkLittleHamburger/wecha
 - 恢复备份时仍把 `driver.type` 归一为实例 `mode`，避免旧回退值带入新实例。
 - 不新增 `mode=sdk`：sdk 是 Bot 内部回退而不是用户可选启动模式，UI 与创建流程仍固定 Helper，不扩展权限与产品契约。
 
-验证（本机，运行时固定 Bot v0.9.3 源码，与安装包内置运行时一致）：新增 3 项回归（helper+sdk 通过启动前校验、sdk 备份可恢复且归一为 helper、配置缺少 storage 时给出明确错误）；修复前 3 项均失败，修复后 Python 全量 190 通过、1 跳过（符号链接用例本机无权限）。前端 45 项及 TypeScript/Vite 构建通过，运行时重新组装与隔离解释器检查通过。未改动 Rust/前端/Windows 代码；最终 Windows CI 与安装器解包校验在发布准备阶段执行。
+验证（本机与发布产物）：新增 3 项回归（helper+sdk 通过启动前校验、sdk 备份可恢复且归一为 helper、配置缺少 storage 时给出明确错误），修复前 3 项均失败，修复后 Python 全量 190 通过、1 跳过（符号链接用例本机无权限，CI 覆盖）；前端 45 项及 TypeScript/Vite 构建通过；运行时重新组装与隔离解释器检查通过。发布前解包确认 1,400 个运行时文件哈希匹配、内嵌运行时与独立 ZIP 一致、16 个 Launcher 源文件与发布提交一致、27 个 vendored 哈希匹配、主程序 `0.8.12.0` 清单与权限正确；包内 Python 实际通过 sdk 启动前检查、sdk 备份恢复归一、桥接恢复三态、手动重启不恢复桥接与正常/损坏备份删除。公网回下载 4 个附件字节数与 SHA-256 一致，并用 0.8.11 更新模块实测发现、下载并校验 0.8.12。未执行真实桌面覆盖安装、微信桥接或用户备份操作。
 
-版本与迁移：v0.8.12 补丁；无数据迁移。现有 sdk 配置由 Launcher 兼容读取；Bot 0.10.3 起不再自动持久化 sdk（Bot 提交 `ff1475d`），两侧发布顺序为 Launcher 0.8.12 先、Bot 0.10.3 后。发布需用户明确请求，并按惯例完成完整 CI、解包哈希与附件校验；源码提交不等于已发布。
+发布（2026-11-13）：标签 `v0.8.12`（tag 对象 `8f52d27` → 提交 `eb73581`），[Release](https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/tag/v0.8.12) 已公开并设为 Latest；[Windows CI 43379930218](https://github.com/PorkLittleHamburger/wechatbot-launcher/actions/runs/43379930218) 成功：191 项 Python、45 项前端、22 项 Rust 主程序、7 项进程测试，NSIS 打包成功。安装器 SHA-256 `7d257f91c25b06ba472025a333ded6d529f59b9fb4e5277e169b764cd5ba31e7`；运行包 SHA-256 `c0d200d74382a1e60e7f1118181179e99428f015db989a08adb6c25ff8e44012`。同期 Bot [v0.10.3](https://github.com/PorkLittleHamburger/wechatbot/releases/tag/v0.10.3) 已发布（tag `ffaab3f`），保留 sdk 枚举、不改写已有 sdk 配置、只停止新的自动写入。升级顺序：先升级 Launcher 0.8.12（现有 sdk 配置无需手改即可启动），再导入 Bot 0.10.3。
+
+仍待目标机复测：用户真实安装升级 0.8.12 后启动原实例并恢复含 sdk 的备份；本页记录的是隔离环境与构建产物验收，不替代真实桌面与微信操作。发布后文档提交不改写 `v0.8.12` 标签与 Latest。
 
 ### 2026-11-12：0.8.11 备份删除与反馈修复
 
