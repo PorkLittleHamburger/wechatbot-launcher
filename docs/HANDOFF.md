@@ -1,12 +1,12 @@
 # 启动器项目交接
 
-维护日期：2026-11-12。新接手的 AI 必须先读本页及 [AGENTS.md](../AGENTS.md)，再检查当前代码、工作树、远端与 Release。本页是交接快照，不代表目标机器的当前部署状态。
+维护日期：2026-11-13。新接手的 AI 必须先读本页及 [AGENTS.md](../AGENTS.md)，再检查当前代码、工作树、远端与 Release。本页是交接快照，不代表目标机器的当前部署状态。
 
 ## 范围与发布基线
 
 - 仓库为 `PorkLittleHamburger/wechatbot-launcher`，只维护桌面启动器。旧对话中的共享仓库或 `WechatBot/launcher` 路径已不适合作为定位依据；先用 `git rev-parse --show-toplevel` 确认。
 - 网关、微信桥接、原生 DLL 及对应测试位于独立 `PorkLittleHamburger/wechatbot` 仓库，通过 `WECHAT_RUNTIME_SOURCE` 参与构建，不复制到启动器源码库。
-- 当前发布线：[v0.8.11](https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/tag/v0.8.11)，源码以该标签指向的提交为准；正式发布状态以 GitHub Latest 为准，后续文档提交不改写发布标签。
+- 当前发布线：[v0.8.12](https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/tag/v0.8.12)，源码以该标签指向的提交为准；正式发布状态以 GitHub Latest 为准，后续文档提交不改写发布标签。
 - [CI](../.github/workflows/desktop.yml) 固定 Bot v0.9.3 源码 `0af6c8098533e17898e0fcbd2824392e9738f20d`（恢复协议 v1）；功能基线为 `b908d4c`，后续仅同步发布说明。本地构建不会自动检出或核对提交，发布前须检查运行时源 HEAD 与工作树。v0.8.8 的历史运行时为 Bot v0.8.6 `23f46eb`。
 - 源码 HEAD、正式发布和实际安装是三种状态，必须分别确认。更新验证后提交推送；只有用户明确要求时才发布新 Release。
 
@@ -67,6 +67,7 @@
 | 0.8.9 | 显式请求桥接恢复、等待登录与停止意图状态展示、旧 worker 能力提示；修复升级意图继承与并发状态倒序覆盖 |
 | 0.8.10 | 实例 WebView2 独立数据目录、窗口串行创建/复用、取消安全门闩、端口变更重建及分阶段错误提示 |
 | 0.8.11 | 备份删除确认、回滚保护、成功/取消反馈及普通通知 5 秒自动收起 |
+| 0.8.12 | 兼容 Bot 0.10.x 持久化的 `driver.type=sdk`：Launcher 只读自有配置子集，备份恢复归一驱动；未知驱动仍拒绝 |
 
 ## 0.8.8 修复与反馈
 
@@ -100,23 +101,23 @@ v0.8.7 的 [Windows CI 41754065459](https://github.com/PorkLittleHamburger/wecha
 
 ## 完成与交付要求
 
-### 2026-11-13：Bot 0.10.x 驱动回退兼容（源码改动，未发布）
+### 2026-11-13：0.8.12 Bot 驱动回退兼容
 
 用户升级 Bot 0.10.1/0.10.2 后，启动实例报「实例驱动与清单不一致」，恢复备份报「备份缺少有效的实例配置」。根因分两层：
 
 1. Bot 0.10.x 在 helper 配置下遇到不支持的微信版本（实测 4.2.0.52）会回退到 sdk，并把 `driver.type=sdk` 持久化进实例 `config.json`；Launcher 0.8.11 的 `manager.check_config` 要求 `driver.type` 等于 `instance.json` 的 `mode`（仍为 helper）。
 2. Launcher 0.8.11 内置运行时是 Bot v0.9.3（CI 固定 `0af6c80`，其配置模型只接受 helper/mock）。`desktop_manager.check_config` 与 `restore_service._read_restore` 用该模型 `AppConfig.load` 解析实例配置，遇到 sdk 即失败：启动被第一层拦下，备份恢复则被包装成「备份缺少有效的实例配置」。
 
-修复（源码，未提交发布）：
+修复（0.8.12 发布内容）：
 
 - 新增 Launcher 自有只读视图 `instance_config.py`：只校验并读取 `webui` 地址、`storage.data_dir`/`media_dir` 隔离路径与 `driver` 对象，不再用自带运行时解析 Bot 全量 schema。`desktop_manager` 的 OneBot 监听端口扫描与 `restore_service` 的备份校验改用该视图。
 - `manager.check_config` 保留一致性检查但按模式限定已知集合：helper 接受 helper/sdk，mock 只接受 mock；未知驱动类型仍明确报错。Launcher 不自动改写 `driver.type`（配置归 Bot 所有）。
 - 恢复备份时仍把 `driver.type` 归一为实例 `mode`，避免旧回退值带入新实例。
 - 不新增 `mode=sdk`：sdk 是 Bot 内部回退而不是用户可选启动模式，UI 与创建流程仍固定 Helper，不扩展权限与产品契约。
 
-验证（本机，运行时固定 Bot v0.9.3 源码，与 0.8.11 打包一致）：新增 3 项回归（helper+sdk 通过启动前校验、sdk 备份可恢复且归一为 helper、配置缺少 storage 时给出明确错误）；修复前 3 项均失败，修复后全量 190 通过、1 跳过（符号链接用例需权限）。未改动 Rust/前端/Windows 代码，未跑完整构建与安装器校验，未发布。
+验证（本机，运行时固定 Bot v0.9.3 源码，与安装包内置运行时一致）：新增 3 项回归（helper+sdk 通过启动前校验、sdk 备份可恢复且归一为 helper、配置缺少 storage 时给出明确错误）；修复前 3 项均失败，修复后 Python 全量 190 通过、1 跳过（符号链接用例本机无权限）。前端 45 项及 TypeScript/Vite 构建通过，运行时重新组装与隔离解释器检查通过。未改动 Rust/前端/Windows 代码；最终 Windows CI 与安装器解包校验在发布准备阶段执行。
 
-版本与迁移：计划 v0.8.12 补丁；无数据迁移。现有 sdk 配置由 Launcher 兼容读取，Bot 0.10.3 起不再持久化 sdk，两侧可独立发布。发布需用户明确请求，并按惯例完成完整 CI、解包哈希与附件校验；源码提交不等于已发布。
+版本与迁移：v0.8.12 补丁；无数据迁移。现有 sdk 配置由 Launcher 兼容读取；Bot 0.10.3 起不再自动持久化 sdk（Bot 提交 `ff1475d`），两侧发布顺序为 Launcher 0.8.12 先、Bot 0.10.3 后。发布需用户明确请求，并按惯例完成完整 CI、解包哈希与附件校验；源码提交不等于已发布。
 
 ### 2026-11-12：0.8.11 备份删除与反馈修复
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-__version__ = "0.8.11"
+__version__ = "0.8.12"
 APP_NAME = "wechatbot"
 
 

@@ -4,6 +4,8 @@
 
 ## 自动化检查
 
+0.8.12 驱动回退兼容回归：`tests/test_desktop_launcher.py -k "sdk_fallback or config_view_errors"` 覆盖 helper 实例接受 Bot 持久化的 sdk、未知驱动类型拒绝、带 sdk 的备份恢复且归一为 helper、配置缺少 storage 时明确报错。修复前 3 项失败，修复后 Python 全量 190 通过、1 跳过（符号链接用例在本机因权限跳过，CI 覆盖）；前端 45 项及 TypeScript/Vite 构建通过。未执行实际安装或桌面启动验收。
+
 0.8.11 备份删除与反馈计时回归：`tests/test_desktop_launcher.py -k "backup_delete or delete_damaged"` 覆盖实际 RPC 删除、损坏备份、路径限制、回滚保护、权限错误及并发还原。目录符号链接测试需要 Windows 开发者模式或相应权限，本机验证为 4 通过、1 跳过。前端 `node --test src/feedback.test.mjs` 使用生产 hook 与假时钟，验证完整操作结束后 5 秒收起、pending/error 保留、批次隔离和删除确认；45 项通过。
 
 ### 0.8.10：真实 WebView2 窗口 smoke
