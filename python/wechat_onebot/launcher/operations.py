@@ -21,6 +21,7 @@ MESSAGES = {
     "restore": ("正在校验并恢复备份", "已恢复为新实例，当前保持停止"),
     "restore_archive": ("正在校验并恢复归档", "归档已恢复为新实例，原归档仍保留"),
     "archive": ("正在归档实例", "实例已归档，可在备份恢复页面恢复"),
+    "archive_delete": ("正在删除归档实例", "归档实例及其数据已彻底删除"),
     "upgrade": ("正在备份、切换版本并检查服务", "实例升级检查完成，当前保持停止"),
     "version_import": ("正在校验并导入运行包", "运行版本已安装，现有实例版本不会自动切换"),
     "version_download": ("正在获取下载地址", "运行版本已下载并校验安装"),
@@ -58,6 +59,8 @@ class DesktopOperations:
             return await manager.restore(p.get("name"), path=p.get("path"))
         elif method == "restore_archive":
             return await manager.restore_archive(p.get("archive_name"))
+        elif method == "archive_delete":
+            await manager.delete_archive(p.get("archive_name"))
         elif method == "upgrade":
             return await manager.upgrade(instance_id, p.get("version"))
         elif method == "version_import":

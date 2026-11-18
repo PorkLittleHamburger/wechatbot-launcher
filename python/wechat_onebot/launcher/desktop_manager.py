@@ -229,6 +229,9 @@ class DesktopManager(LauncherManager):
     async def restore_archive(self, archive_name: str):
         return await self.restorer.restore_archive(archive_name)
 
+    async def delete_archive(self, archive_name: str):
+        return await self.restorer.delete_archive(archive_name)
+
     async def upgrade(self, instance_id: str, version: str):
         slot = self.slots.setdefault(instance_id, ProcessSlot())
         async with self.versions.lock, slot.lock:

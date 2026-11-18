@@ -66,7 +66,7 @@ test('a failed operation does not terminate an unrelated download', () => {
   assert.equal(rows[1].message, '仍在下载');
 });
 test('empty RPC success is rejected for each mutation and update operation', () => {
-  for (const method of ['start', 'stop', 'restart', 'create', 'update', 'archive', 'backup', 'restore', 'restore_archive', 'upgrade', 'version_remove', 'version_import', 'version_download', 'settings_set', 'launcher_update_check', 'launcher_update_download']) {
+  for (const method of ['start', 'stop', 'restart', 'create', 'update', 'archive', 'archive_delete', 'backup', 'restore', 'restore_archive', 'upgrade', 'version_remove', 'version_import', 'version_download', 'settings_set', 'launcher_update_check', 'launcher_update_download']) {
     for (const empty of [null, undefined, '', '{}', {}, false]) assert.throws(() => validateResult(method, empty), method);
   }
   validateResult('stop', { ok: true });
@@ -79,7 +79,7 @@ test('an explicitly empty release list and no update are valid', () => {
 
 // Render-only fixture: no Tauri invocation, process, dialog, registry or network access.
 const bundled = await build({
-  stdin: { contents: `export { createElement } from 'react'; export { renderToStaticMarkup } from 'react-dom/server'; export { SettingsPage } from './components/SettingsPage'; export { RecoveryPage } from './components/RecoveryPage'; export { InstancesPage } from './components/InstancesPage'; export { OperationFeedback } from './components/OperationFeedback';`, resolveDir: fileURLToPath(new URL('.', import.meta.url)), loader: 'tsx' },
+  stdin: { contents: `export { createElement } from 'react'; export { renderToStaticMarkup } from 'react-dom/server'; export { SettingsPage } from './components/SettingsPage'; export { RecoveryPage } from './components/RecoveryPage'; export { InstancesPage } from './components/InstancesPage'; export { OperationFeedback } from './components/OperationFeedback'; export { Notice } from './components/Notice';`, resolveDir: fileURLToPath(new URL('.', import.meta.url)), loader: 'tsx' },
   plugins: [{ name: 'react-node-runtime', setup(build) { build.onResolve({ filter: /^react(?:-dom)?(?:\/|$)/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true })); } }],
   bundle: true, write: false, platform: 'node', format: 'esm', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' },
 });
@@ -99,6 +99,19 @@ test('damaged backup and archive remain visible with diagnostics and disabled re
   assert.equal((html.match(/disabled=""/g) || []).length, 2);
   assert.doesNotMatch(html, /暂无备份|暂无已归档/);
 });
+test('archived instances expose restore and permanent delete, damaged archives remain deletable', () => {
+  const html = render(ui.RecoveryPage, { workspace: workspace({ archives: [
+    { archive_name: 'old-archive', name: '旧实例', id: 'id-1', version: '0.8.0' },
+    { archive_name: 'broken-folder', name: '损坏归档', id: '', version: '未知', invalid: true, error: '元数据损坏' },
+  ] }) });
+  assert.equal((html.match(/>删除归档</g) || []).length, 2);
+  assert.match(html, /恢复归档/);
+  assert.match(html, /<button disabled="" title="归档损坏，禁止恢复：元数据损坏"/);
+  assert.doesNotMatch(html, /<button class="danger" disabled=""/);
+  validateResult('archive_delete', { ok: true });
+  assert.throws(() => validateResult('archive_delete', {}));
+});
+
 test('failed catalog and instance reads are distinct from empty collections', () => {
   const w = workspace({ diagnostics: [{ section: 'backups', message: '读取失败' }, { section: 'instances', message: '读取失败' }] });
   assert.match(render(ui.RecoveryPage, { workspace: w }), /此分区读取存在错误/);
@@ -121,6 +134,21 @@ test('terminal feedback has no stale progress bar; pending feedback cannot be di
   const html = render(ui.OperationFeedback, { rows: [failed, pending], dismiss() {} });
   assert.doesNotMatch(html, /<progress/);
   assert.equal((html.match(/aria-label="关闭/g) || []).length, 1);
+});
+
+test('auto-dismissing notices and terminal feedback show a five-second countdown bar', () => {
+  const notice = render(ui.Notice, { text: '已取消，未执行变更', sequence: 2, onClose() {} });
+  assert.match(notice, /data-countdown="notice"/);
+  assert.match(notice, /animation-duration:5000ms/);
+  assert.match(notice, /关闭消息/);
+  const success = finishFeedback(row('ok', 'stop', 'a'), 'success', '已完成');
+  const cancelled = finishFeedback(row('cancel', 'restore'), 'cancelled', '已取消，未执行变更');
+  const failed = finishFeedback(row('bad', 'start', 'b'), 'error', '失败');
+  const pending = { ...row('pending', 'version_download', '1'), progress: 40 };
+  const html = render(ui.OperationFeedback, { rows: [success, cancelled, failed, pending], dismiss() {} });
+  assert.equal((html.match(/data-countdown="feedback"/g) || []).length, 2);
+  assert.equal((html.match(/animation-duration:5000ms/g) || []).length, 2);
+  assert.match(html, /<progress/);
 });
 
 test('backend success detail appears only after complete native RPC confirmation', () => {
@@ -627,6 +655,17 @@ test('workspace notices expire after five seconds and replacement or manual clos
   paint().setNotice(''); paint();
   paint().setNotice('新提示'); paint();
   assert.equal((await tick(4999)).notice, '新提示');
+  assert.equal((await tick(1)).notice, '');
+});
+
+test('workspace repeating the same notice restarts its countdown and expiry', async t => {
+  const { paint, tick } = await workspaceHarness(t);
+  paint().setNotice('同一提示'); paint();
+  const firstSequence = paint().noticeSequence;
+  await tick(4000);
+  paint().setNotice('同一提示'); paint();
+  assert.notEqual(paint().noticeSequence, firstSequence);
+  assert.equal((await tick(4999)).notice, '同一提示');
   assert.equal((await tick(1)).notice, '');
 });
 

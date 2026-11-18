@@ -12,7 +12,12 @@ export function useWorkspace() {
   const locks = useRef(new Set<string>());
   const [errors, setErrors] = useState<ErrorEntry[]>([]);
   const errorId = useRef(0);
-  const [notice, setNotice] = useState('');
+  const [notice, setNoticeText] = useState('');
+  const [noticeSequence, setNoticeSequence] = useState(0);
+  const setNotice = useCallback((value: string) => {
+    setNoticeText(value);
+    setNoticeSequence(sequence => sequence + 1);
+  }, []);
   const [feedback, setFeedback] = useState<Feedback[]>([]);
   const feedbackRef = useRef<Feedback[]>([]);
   const feedbackTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -99,9 +104,9 @@ export function useWorkspace() {
   }, [refresh]);
   useEffect(() => {
     if (!notice) return;
-    const timer = setTimeout(() => setNotice(''), FEEDBACK_DISMISS_MS);
+    const timer = setTimeout(() => setNoticeText(''), FEEDBACK_DISMISS_MS);
     return () => clearTimeout(timer);
-  }, [notice]);
+  }, [notice, noticeSequence]);
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
@@ -110,7 +115,7 @@ export function useWorkspace() {
     return () => { disposed = true; unlisten?.(); };
   }, [updateFeedback]);
 
-  return { snapshot, setSnapshot, connected, refreshing, busy, errors, setErrors, notice, setNotice,
+  return { snapshot, setSnapshot, connected, refreshing, busy, errors, setErrors, notice, setNotice, noticeSequence,
     feedback, dismissFeedback: (key: string) => {
       // Capture the rendered attempt: an old close handler must not dismiss a retry.
       const id = feedback.find(row => row.key === key && !row.pending)?.operationId;

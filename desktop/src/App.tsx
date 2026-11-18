@@ -7,6 +7,7 @@ import { VersionsPage } from './components/VersionsPage';
 import { RecoveryPage } from './components/RecoveryPage';
 import { InstancesPage } from './components/InstancesPage';
 import { OperationFeedback } from './components/OperationFeedback';
+import { Notice } from './components/Notice';
 import { open } from '@tauri-apps/plugin-dialog';
 import { version as desktopVersion } from '../package.json';
 import { messageOf, rpc } from './api';
@@ -33,7 +34,7 @@ function Modal({ title, busy, close, children }: { title: string; busy: boolean;
 export default function App() {
   const [page, setPage] = useState<Page>('实例管理');
   const workspace = useWorkspace();
-  const { snapshot, connected, refreshing, busy, errors, setErrors, notice, setNotice, feedback, dismissFeedback, refresh, run, report, mounted } = workspace;
+  const { snapshot, connected, refreshing, busy, errors, setErrors, notice, setNotice, noticeSequence, feedback, dismissFeedback, refresh, run, report, mounted } = workspace;
   const [modal, setModal] = useState<ModalState | null>(null);
   const [modalError, setModalError] = useState('');
   const [name, setName] = useState('');
@@ -100,7 +101,7 @@ export default function App() {
         <div className="page-heading"><div><div className="eyebrow">YOUR BOT WORKSPACE</div><h1>{page}</h1><p>{({ 实例管理: '让每一个机器人，都有自己的工作空间。', 版本管理: '按需安装版本，让每次升级都更从容。', 备份恢复: '保存工作进度，随时找回熟悉的配置。', 日志: '查看实例的运行记录与诊断信息。', 设置: '按你的习惯，安排工作空间的启动与退出。' })[page]}</p></div><div className="actions"><button disabled={refreshing} onClick={() => void refresh()}>↻ 刷新</button>{page === '实例管理' && <button className="primary" title={!connected ? '等待本地服务连接' : !versions.length ? '请先在版本管理中下载或导入版本' : busy.has('create') ? '正在创建实例' : '创建独立实例'} disabled={!connected || !snapshot || !versions.length || busy.has('create')} onClick={() => showEditor()}>{busy.has('create') ? '创建中…' : '＋ 创建实例'}</button>}{page === '版本管理' && <button className="primary" title={!connected ? '等待本地服务连接' : versionBusy ? '请等待版本操作完成' : '选择并校验本地 ZIP 安装包'} disabled={versionBusy} onClick={() => void chooseZip('version_import')}>{busy.has('version:import') ? '导入中…' : '导入 ZIP 版本'}</button>}{page === '备份恢复' && <button className="primary" title={!connected ? '等待本地服务连接' : busy.has('restore:local') ? '请等待本地恢复操作完成' : '选择备份 ZIP 后确认恢复'} disabled={!connected || busy.has('restore:local')} onClick={() => void chooseZip('restore')}>{busy.has('restore:local') ? '恢复操作中…' : '从本地 ZIP 恢复'}</button>}</div></div>
         <div className="alerts" aria-live="polite">{errors.map(e => <div className="alert error" key={e.id}><span><strong>{e.label}</strong> · {e.message}</span>{e.retry && <button onClick={e.retry}>重试</button>}<button aria-label="关闭错误" onClick={() => setErrors(old => old.filter(row => row.id !== e.id))}>×</button></div>)}</div>
         {snapshot?.autostart_error && <div className="alert error" role="alert"><span><strong>开机启动任务未能同步</strong> · {snapshot.autostart_error}。请在设置中重新保存，详细记录见数据目录中的 autostart.log。</span></div>}
-        {notice && <div className="alert info" role="status"><span>{notice}</span><button onClick={() => setNotice('')} aria-label="关闭消息">×</button></div>}
+        {notice && <Notice text={notice} sequence={noticeSequence} onClose={() => setNotice('')} />}
         <OperationFeedback rows={feedback} dismiss={dismissFeedback} />
         {snapshot?.diagnostics?.map((d, index) => <div className="alert error" role="alert" key={`${d.section}:${index}`}><span><strong>{d.section}</strong> · {d.message}</span></div>)}
 

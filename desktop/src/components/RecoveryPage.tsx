@@ -16,11 +16,14 @@ export function RecoveryPage({ workspace, confirm }: { workspace: Workspace; con
       })}
       {!snapshot?.backups.length && <div className="empty compact">{empty('backups', '暂无备份。停止实例后，可在实例卡片中创建备份。')}</div>}
     </section>
-    <section className="panel"><div className="section-heading"><h2>已归档实例</h2><span className="muted">损坏的归档需修复后才能恢复</span></div>
+    <section className="panel"><div className="section-heading"><h2>已归档实例</h2><span className="muted">损坏的归档可删除，恢复前需先修复</span></div>
       {snapshot?.archives.map(a => {
-        const key = `archive:${a.archive_name}`, reason = a.invalid ? `归档损坏，禁止恢复：${a.error || '归档元数据校验失败'}` : !connected ? '请等待本地服务连接' : busy.has(key) ? '正在恢复此归档，请稍候' : '';
+        const key = `archive:${a.archive_name}`;
+        const reason = a.invalid ? `归档损坏，禁止恢复：${a.error || '归档元数据校验失败'}` : !connected ? '请等待本地服务连接' : busy.has(key) ? '正在恢复此归档，请稍候' : '';
+        const deleteReason = !connected ? '请等待本地服务连接' : busy.has(key) ? '此归档正在操作中，请稍候' : snapshot.diagnostics?.some(d => d.section === 'archives') ? '归档列表读取失败，请刷新后重试' : '';
         return <div className="list-row" key={a.archive_name}><div className="row-copy"><strong>{a.name}</strong><small>{a.version} · {a.archive_name}</small>{reason && <small className={a.invalid ? 'danger' : ''}>{reason}</small>}</div>
-          <button disabled={!!reason} title={reason} onClick={() => confirm('恢复归档', `确定恢复归档实例“${a.name}”吗？`, key, operationId => rpc('restore_archive', { archive_name: a.archive_name }, operationId), { operation: 'restore_archive' })}>{busy.has(key) ? '恢复中…' : a.invalid ? '无法恢复' : '恢复归档'}</button></div>;
+          <div className="actions"><button disabled={!!reason} title={reason} onClick={() => confirm('恢复归档', `确定恢复归档实例“${a.name}”吗？`, key, operationId => rpc('restore_archive', { archive_name: a.archive_name }, operationId), { operation: 'restore_archive' })}>{busy.has(key) ? '处理中…' : a.invalid ? '无法恢复' : '恢复归档'}</button>
+          <button className="danger" disabled={!!deleteReason} title={deleteReason || '永久删除归档实例及其全部数据'} onClick={() => confirm('删除归档', `确定永久删除归档实例“${a.name}”及其全部数据吗？此操作不可撤销。`, key, operationId => rpc('archive_delete', { archive_name: a.archive_name }, operationId), { operation: 'archive_delete' })}>删除归档</button></div></div>;
       })}
       {!snapshot?.archives.length && <div className="empty compact">{empty('archives', '暂无已归档实例。')}</div>}
     </section>

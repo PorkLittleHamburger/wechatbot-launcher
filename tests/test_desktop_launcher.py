@@ -1621,3 +1621,65 @@ async def test_check_config_reports_launcher_config_view_errors(desktop):
     path.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(ConfigError, match="storage"):
         desktop.check_config(row["id"])
+
+
+@pytest.mark.asyncio
+async def test_archive_delete_rpc_removes_archived_instance_and_data(metadata_desktop):
+    from wechat_onebot.launcher.supervisor import Dispatcher
+    manager = metadata_desktop
+    row = await manager.create("Delete archive", "mock", free_port(), "0.8.0")
+    marker = manager.directory(row["id"]) / "data" / "marker.bin"
+    marker.parent.mkdir(parents=True)
+    marker.write_bytes(b"archived data")
+    await manager.archive(row["id"])
+    archived, = manager.archives()
+    name = archived["archive_name"]
+    directory = manager.root / "archive" / name
+    assert directory.is_dir() and (directory / "data" / "marker.bin").read_bytes() == b"archived data"
+    assert manager.referenced_versions() == {"0.8.0"}
+    events = []
+    result = await Dispatcher(manager, events.append).dispatch(
+        "archive_delete", {"archive_name": name, "_operation_id": "archive-delete-test"})
+    assert result == {"ok": True}
+    assert not directory.exists()
+    assert manager.archives() == []
+    assert manager.referenced_versions() == set()
+    assert [event["data"]["phase"] for event in events] == ["start", "success"]
+    with pytest.raises(ConfigError):
+        await manager.delete_archive(name)
+
+
+@pytest.mark.asyncio
+async def test_archive_delete_cleans_damaged_archive(metadata_desktop):
+    folder = metadata_desktop.root / "archive" / "damaged"
+    folder.mkdir(parents=True)
+    (folder / "instance.json").write_text("{", encoding="utf-8")
+    assert metadata_desktop.archives()[0]["invalid"] is True
+    await metadata_desktop.delete_archive("damaged")
+    assert metadata_desktop.archives() == []
+    assert not folder.exists()
+    assert metadata_desktop.snapshot()["diagnostics"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", [None, "", ".", "..", "../outside", "..\\outside",
+                                 "C:/outside", "/outside", "missing"])
+async def test_archive_delete_rejects_invalid_names(metadata_desktop, name):
+    with pytest.raises(ConfigError):
+        await metadata_desktop.delete_archive(name)
+
+
+@pytest.mark.asyncio
+async def test_archive_delete_rejects_redirected_archive_folder(metadata_desktop):
+    other = metadata_desktop.root / "outside-archive-source"
+    other.mkdir()
+    (other / "payload.bin").write_bytes(b"outside data")
+    archive_root = metadata_desktop.root / "archive"
+    archive_root.mkdir(exist_ok=True)
+    try:
+        (archive_root / "redirected").symlink_to(other, target_is_directory=True)
+    except OSError:
+        pytest.skip("Symbolic link creation requires Windows developer mode or privilege")
+    with pytest.raises(ConfigError, match="归档不存在"):
+        await metadata_desktop.delete_archive("redirected")
+    assert (other / "payload.bin").read_bytes() == b"outside data"

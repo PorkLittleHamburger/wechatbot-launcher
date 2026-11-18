@@ -10,3 +10,8 @@ dialog{border:1px solid var(--line);border-radius:16px;padding:0;width:min(520px
 @media(max-width:760px){.path-control{flex-wrap:wrap}.path-control>span{flex-basis:100%;border-bottom:1px solid var(--line)}.path-control>button{flex:1;border-left:0;border-top:1px solid var(--line)}.path-control>button+button{border-left:1px solid var(--line);border-top:1px solid var(--line)}}
 
 [hidden]{display:none!important}.progress-card.error{background:#fff1f3;border-color:#f2d5dd;color:#ae3d54}.progress-card.error strong{color:#ae3d54}.progress-card.success{background:#e8f7f0;border-color:#bfe4d6}.progress-card.success strong{color:#21886b}.progress-card.cancelled{background:#f4f8fc;border-color:var(--line)}
+.alert.notice,.progress-card{position:relative;overflow:hidden}
+.notice-countdown{position:absolute;left:0;right:0;bottom:0;height:3px;background:currentColor;opacity:.35;transform-origin:left;animation-name:notice-countdown;animation-timing-function:linear;animation-fill-mode:forwards;pointer-events:none;border-radius:0 0 8px 8px}
+.progress-card .notice-countdown{background:var(--blue);opacity:.45}
+@keyframes notice-countdown{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+@media(prefers-reduced-motion:reduce){.notice-countdown{animation:none;display:none}}

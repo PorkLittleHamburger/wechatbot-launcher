@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 import time
 import uuid
@@ -76,12 +77,35 @@ class RestoreService:
                 stage.rename(directory)
                 return row
 
-    async def restore_archive(self, archive_name: str):
+    def archive_path(self, archive_name: str) -> Path:
         if not isinstance(archive_name, str) or Path(archive_name).name != archive_name or "\\" in archive_name or ":" in archive_name:
             raise ConfigError("归档名称无效")
-        source = self.root / "archive" / archive_name
-        if not source.is_dir() or identity_path(source).parent != identity_path(self.root / "archive"):
+        root = self.root / "archive"
+        path = root / archive_name
+        if (not path.is_dir() or path.is_symlink()
+                or identity_path(path).parent != identity_path(root)):
             raise ConfigError("归档不存在")
+        return path
+
+    async def delete_archive(self, archive_name: str):
+        """Permanently remove one archived instance and all of its data."""
+        async with self.versions.lock, self.lifecycle.guard:
+            source = self.archive_path(archive_name)
+            def remove():
+                # Validate every entry before recursive deletion so junctions or
+                # unportable names can never redirect removal outside the archive.
+                for item in source.rglob("*"):
+                    require_portable_relative(item.relative_to(source))
+                    if not is_within(item, source):
+                        raise ConfigError("归档包含越界链接，不能删除")
+                shutil.rmtree(source)
+            try:
+                await run_blocking(remove)
+            except OSError as error:
+                raise ConfigError(f"删除归档失败，请检查文件权限或占用：{error}") from error
+
+    async def restore_archive(self, archive_name: str):
+        source = self.archive_path(archive_name)
         with tempfile.TemporaryDirectory(prefix="archive-", dir=self.root) as temporary:
             package = Path(temporary) / "restore.zip"
             def pack():
