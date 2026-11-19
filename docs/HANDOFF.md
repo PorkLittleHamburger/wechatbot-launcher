@@ -1,12 +1,12 @@
 # 启动器项目交接
 
-维护日期：2026-11-13。新接手的 AI 必须先读本页及 [AGENTS.md](../AGENTS.md)，再检查当前代码、工作树、远端与 Release。本页是交接快照，不代表目标机器的当前部署状态。
+维护日期：2026-11-19。新接手的 AI 必须先读本页及 [AGENTS.md](../AGENTS.md)，再检查当前代码、工作树、远端与 Release。本页是交接快照，不代表目标机器的当前部署状态。
 
 ## 范围与发布基线
 
 - 仓库为 `PorkLittleHamburger/wechatbot-launcher`，只维护桌面启动器。旧对话中的共享仓库或 `WechatBot/launcher` 路径已不适合作为定位依据；先用 `git rev-parse --show-toplevel` 确认。
 - 网关、微信桥接、原生 DLL 及对应测试位于独立 `PorkLittleHamburger/wechatbot` 仓库，通过 `WECHAT_RUNTIME_SOURCE` 参与构建，不复制到启动器源码库。
-- 当前发布线：[v0.8.12](https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/tag/v0.8.12)，源码以该标签指向的提交为准；正式发布状态以 GitHub Latest 为准，后续文档提交不改写发布标签。
+- 当前发布线：[v0.8.13](https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/tag/v0.8.13)，源码以该标签指向的提交为准；正式发布状态以 GitHub Latest 为准，后续文档提交不改写发布标签。
 - [CI](../.github/workflows/desktop.yml) 固定 Bot v0.9.3 源码 `0af6c8098533e17898e0fcbd2824392e9738f20d`（恢复协议 v1）；功能基线为 `b908d4c`，后续仅同步发布说明。本地构建不会自动检出或核对提交，发布前须检查运行时源 HEAD 与工作树。v0.8.8 的历史运行时为 Bot v0.8.6 `23f46eb`。
 - 源码 HEAD、正式发布和实际安装是三种状态，必须分别确认。更新验证后提交推送；只有用户明确要求时才发布新 Release。
 
@@ -68,6 +68,7 @@
 | 0.8.10 | 实例 WebView2 独立数据目录、窗口串行创建/复用、取消安全门闩、端口变更重建及分阶段错误提示 |
 | 0.8.11 | 备份删除确认、回滚保护、成功/取消反馈及普通通知 5 秒自动收起 |
 | 0.8.12 | 兼容 Bot 0.10.x 持久化的 `driver.type=sdk`：Launcher 只读自有配置子集，备份恢复归一驱动；未知驱动仍拒绝 |
+| 0.8.13 | 归档实例可确认后彻底删除（损坏归档亦可清理）；普通通知与成功/取消反馈显示 5 秒倒计时条 |
 
 ## 0.8.8 修复与反馈
 
@@ -101,18 +102,18 @@ v0.8.7 的 [Windows CI 41754065459](https://github.com/PorkLittleHamburger/wecha
 
 ## 完成与交付要求
 
-### 2026-11-18：未发布的归档删除与提示倒计时
+### 2026-11-18：0.8.13 归档删除与提示倒计时
 
 用户反馈两个问题：归档后的实例无法彻底删除；自动收起的提示条需要可见的倒计时。
 
-修复（未发布源码）：
+修复（0.8.13 发布内容）：
 
 - 新增 `archive_delete` RPC：`operations.py` 增加操作与成功文案，`desktop_manager.delete_archive` 委托 `RestoreService`；`restore_service.archive_path` 统一归档名校验（拒绝路径分隔与非法名称、拒绝重定向目录），`delete_archive` 在版本库锁与生命周期锁内先逐项检查可移植名称和真实目录身份，再删除归档目录；越界链接、特殊文件名、权限或占用错误明确拒绝，不返回伪成功。`restore_archive` 复用同一校验。
 - 备份恢复页“已归档实例”新增“删除归档”按钮：确认后永久删除归档及数据，损坏归档也可删除；删除与恢复共用操作键和忙状态，删除后快照刷新、被引用版本自动解除引用。
 - 提示条倒计时：`useWorkspace` 增加 `noticeSequence`，重复同一文本也会重启 5 秒计时；新增 `Notice` 组件，普通通知与自动收起的成功/取消反馈底部显示 5 秒自右向左缩短的倒计时条，失败与进行中提示不显示；`prefers-reduced-motion` 下隐藏倒计时条。
 - `archive_delete` 纳入 `api-contract.ts` 结果校验与操作反馈。
 
-验证（本机，运行时固定 Bot v0.9.3）：新增 Python 回归 12 项（归档删除 RPC 与数据清理、版本引用释放、损坏归档清理、9 个非法名称拒绝、重定向归档拒绝；其中 2 项符号链接用例因本机权限跳过）；Python 全量 201 通过、2 跳过。前端 48 项通过（新增归档删除契约、倒计时条渲染、同一提示重新计时）；`tsc --noEmit` 与 Vite 构建通过。未改 Rust/Windows 代码，未执行真实桌面安装或归档删除验收。计划随下个补丁版本（0.8.13）发布；源码提交不等于已发布。
+验证（本机，运行时固定 Bot v0.9.3）：新增 Python 回归 12 项（归档删除 RPC 与数据清理、版本引用释放、损坏归档清理、9 个非法名称拒绝、重定向归档拒绝；其中 2 项符号链接用例因本机权限跳过）；Python 全量 201 通过、2 跳过。前端 48 项通过（新增归档删除契约、倒计时条渲染、同一提示重新计时）；`tsc --noEmit` 与 Vite 构建通过。未改 Rust/Windows 代码，未执行真实桌面安装或归档删除验收。本版本为 0.8.13；发布前须完成完整 Windows CI、安装器解包与附件校验，源码提交不等于已发布。
 
 ### 2026-11-13：0.8.12 Bot 驱动回退兼容
 
