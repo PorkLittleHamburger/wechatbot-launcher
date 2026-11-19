@@ -113,7 +113,9 @@ v0.8.7 的 [Windows CI 41754065459](https://github.com/PorkLittleHamburger/wecha
 - 提示条倒计时：`useWorkspace` 增加 `noticeSequence`，重复同一文本也会重启 5 秒计时；新增 `Notice` 组件，普通通知与自动收起的成功/取消反馈底部显示 5 秒自右向左缩短的倒计时条，失败与进行中提示不显示；`prefers-reduced-motion` 下隐藏倒计时条。
 - `archive_delete` 纳入 `api-contract.ts` 结果校验与操作反馈。
 
-验证（本机，运行时固定 Bot v0.9.3）：新增 Python 回归 12 项（归档删除 RPC 与数据清理、版本引用释放、损坏归档清理、9 个非法名称拒绝、重定向归档拒绝；其中 2 项符号链接用例因本机权限跳过）；Python 全量 201 通过、2 跳过。前端 48 项通过（新增归档删除契约、倒计时条渲染、同一提示重新计时）；`tsc --noEmit` 与 Vite 构建通过。未改 Rust/Windows 代码，未执行真实桌面安装或归档删除验收。本版本为 0.8.13；发布前须完成完整 Windows CI、安装器解包与附件校验，源码提交不等于已发布。
+验证（本机，运行时固定 Bot v0.9.3）：新增 Python 回归 12 项（归档删除 RPC 与数据清理、版本引用释放、损坏归档清理、9 个非法名称拒绝、重定向归档拒绝；其中 2 项符号链接用例因本机权限跳过）；Python 全量 201 通过、2 跳过。前端 48 项通过（新增归档删除契约、倒计时条渲染、同一提示重新计时）；`tsc --noEmit` 与 Vite 构建通过。未改 Rust/Windows 代码，未执行真实桌面安装或归档删除验收。
+
+发布（2026-11-19）：标签 `v0.8.13`（tag 对象 `4f3c69a` → 提交 `5ff23ee`），[Release](https://github.com/PorkLittleHamburger/wechatbot-launcher/releases/tag/v0.8.13) 已公开并设为 Latest；[Windows CI 44535524998](https://github.com/PorkLittleHamburger/wechatbot-launcher/actions/runs/44535524998) 成功：203 项 Python、48 项前端、22 项 Rust 主程序、7 项进程测试，NSIS 打包成功。安装器 SHA-256 `f9e954958ef2c51c3671c47818b66caf1f1700fbb2e4c8d4362413cadd14781a`；运行包 SHA-256 `ac1604a783c3ed2e93ea10600ae4b88076cc26d07737ba45be7ddb8c2fb454c1`。发布前解包确认 1,400 个运行时文件哈希匹配、内嵌运行时与独立 ZIP 一致、16 个 Launcher 源文件与发布提交一致、27 个 vendored 哈希匹配、主程序 `0.8.13.0` 清单与权限正确；包内 Python 实测归档删除 RPC、sdk 回退兼容、桥接恢复三态与正常/损坏备份删除；公网回下载 4 个附件字节数与 SHA-256 一致；0.8.12 更新模块实测发现、下载并校验 0.8.13（首次下载因网络连接中断失败，重试成功）。未执行真实桌面覆盖安装与倒计时观感验收。
 
 ### 2026-11-13：0.8.12 Bot 驱动回退兼容
 
